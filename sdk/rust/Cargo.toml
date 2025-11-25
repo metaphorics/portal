@@ -1,0 +1,75 @@
+[package]
+name = "portal-sdk"
+version = "0.1.0"
+edition = "2021"
+authors = ["Portal Team"]
+license = "MIT"
+description = "Rust SDK for Portal - A lightweight, DNS-driven peer-to-peer proxy"
+repository = "https://github.com/gosuda/portal"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures = { workspace = true }
+futures-io = { workspace = true }
+futures-util = { workspace = true }
+
+# Cryptography
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+hmac = { workspace = true }
+base32 = { workspace = true }
+chacha20poly1305 = { workspace = true }
+x25519-dalek = { workspace = true }
+hkdf = { workspace = true }
+
+# Serialization
+prost = { workspace = true }
+prost-types = { workspace = true }
+bytes = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# WebSocket
+tungstenite = { workspace = true }
+
+# Multiplexing (yamux equivalent)
+yamux = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# URL parsing
+url = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+
+# Time
+chrono = { workspace = true }
+
+# Encoding
+hex = { workspace = true }
+
+# HTTP server (optional, for Accept trait impl)
+hyper = { workspace = true, optional = true }
+
+[build-dependencies]
+prost-build = "0.14.1"
+
+[dev-dependencies]
+tokio-test = "0.4.4"
+
+[features]
+default = []
+hyper-support = ["hyper"]
+
+[lib]
+name = "portal_sdk"
+path = "src/lib.rs"

@@ -439,18 +439,7 @@ func main() {
 		return nil
 	}))
 
-	// Register HTTP handler for Service Worker fetch passthrough
-	goHTTPHandler = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) < 1 {
-			return nil
-		}
-		fetch := js.Global().Get("fetch")
-		if fetch.IsUndefined() || fetch.IsNull() {
-			return nil
-		}
-		return fetch.Invoke(args[0])
-	})
-	js.Global().Set("__go_jshttp", goHTTPHandler)
+	log.Info().Msg("SDK message handler registered as __sdk_message_handler")
 
 	// Check for TinyGo runtime
 	if runtime.Compiler == "tinygo" {

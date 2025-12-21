@@ -98,8 +98,8 @@ let declaredStage = ReadinessStage.UNINITIALIZED; // What we think the stage is
 // Check handler availability
 function areHandlersAvailable() {
   return {
-    http: typeof __go_jshttp !== "undefined",
-    sdk: typeof __sdk_message_handler !== "undefined" || typeof __sdk_handle_message !== "undefined"
+    http: typeof self.__go_jshttp !== "undefined",
+    sdk: typeof self.__sdk_message_handler !== "undefined"
   };
 }
 
@@ -107,7 +107,7 @@ function areHandlersAvailable() {
 function getCurrentStage() {
   const { http, sdk } = areHandlersAvailable();
 
-  const sdkHandler = __sdk_message_handler || __sdk_handle_message;
+  const sdkHandler = self.__sdk_message_handler;
   if (http && sdkHandler) {
     return ReadinessStage.READY;
   } else if (http && !sdkHandler) {
@@ -763,13 +763,13 @@ self.addEventListener("message", (event) => {
         await ensureReady(ReadinessStage.READY);
 
         // Handlers should now be available
-        const sdkHandler = __sdk_message_handler || __sdk_handle_message;
+        const sdkHandler = self.__sdk_message_handler;
         if (typeof sdkHandler === "undefined") {
           throw new Error("SDK message handler still not available after centralized recovery");
         }
 
         // Call WASM message handler
-        sdkHandler(event.data.type, event.data);
+        sdkHandler(event.data);
       } catch (error) {
         console.error("[SW] SDK message handling failed:", error);
         // Send error back to client
@@ -834,12 +834,12 @@ self.addEventListener("fetch", (e) => {
         await ensureReady(ReadinessStage.READY);
 
         // Handler should now be available
-        if (typeof __go_jshttp === "undefined") {
+        if (typeof self.__go_jshttp === "undefined") {
           throw new Error("__go_jshttp still not available after centralized recovery");
         }
 
         // Process request
-        const resp = await __go_jshttp(e.request);
+        const resp = await self.__go_jshttp(e.request);
         return resp;
       } catch (error) {
         console.error("[SW] Request handling failed:", error);

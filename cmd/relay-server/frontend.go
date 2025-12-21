@@ -482,11 +482,6 @@ func (f *Frontend) ServePortalStatic(w http.ResponseWriter, r *http.Request) {
 		f.serveStaticFileWithFallback(w, r, staticPath, "application/javascript")
 		return
 
-	case "portal.mp4":
-		w.Header().Set("Cache-Control", "public, max-age=604800")
-		w.Header().Set("Content-Type", "video/mp4")
-		f.serveStaticFileWithFallback(w, r, staticPath, "video/mp4")
-		return
 	}
 
 	// Default caching for other files
@@ -598,6 +593,11 @@ func (f *Frontend) ServeDynamicManifest(w http.ResponseWriter, _ *http.Request) 
 		}
 	}
 
+	if wasmFile == "" {
+		http.Error(w, "WASM artifact not available", http.StatusServiceUnavailable)
+		log.Error().Msg("No WASM file available for manifest")
+		return
+	}
 	// Generate WASM URL
 	wasmURL := flagPortalURL + "/frontend/" + wasmFile
 

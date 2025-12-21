@@ -16,6 +16,19 @@ var (
 	_Uint8Array  = js.Global().Get("Uint8Array")
 )
 
+func readOptimizationsFlag() bool {
+	value := js.Global().Get("__PORTAL_OPTIMIZATIONS__")
+	if value.IsUndefined() || value.IsNull() {
+		return true
+	}
+	if value.Type() == js.TypeBoolean {
+		return value.Bool()
+	}
+	return true
+}
+
+var optimizationsEnabled = readOptimizationsFlag()
+
 type Conn struct {
 	ws js.Value
 
@@ -28,6 +41,27 @@ type Conn struct {
 func (conn *Conn) freeFuncs() {
 	for _, f := range conn.funcsToBeReleased {
 		f.Release()
+	}
+}
+
+func (conn *Conn) enqueueMessage(data []byte) {
+	if !optimizationsEnabled {
+		conn.messageChan <- data
+		return
+	}
+	select {
+	case conn.messageChan <- data:
+		return
+	default:
+		// Drop oldest to keep queue bounded and avoid blocking JS callbacks.
+		select {
+		case <-conn.messageChan:
+		default:
+		}
+		select {
+		case conn.messageChan <- data:
+		default:
+		}
 	}
 }
 
@@ -59,7 +93,7 @@ func Dial(uri string) (*Conn, error) {
 			// text frame
 			data := []byte(jsData.String())
 
-			conn.messageChan <- data
+			conn.enqueueMessage(data)
 		} else if jsData.InstanceOf(_ArrayBuffer) {
 			// binary frame
 			array := _Uint8Array.New(jsData)
@@ -67,7 +101,7 @@ func Dial(uri string) (*Conn, error) {
 			data := make([]byte, byteLength)
 			js.CopyBytesToGo(data, array)
 
-			conn.messageChan <- data
+			conn.enqueueMessage(data)
 		}
 
 		return nil

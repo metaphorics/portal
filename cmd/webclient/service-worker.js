@@ -14,6 +14,13 @@ function debugLog(...args) {
   }
 }
 
+function nowMs() {
+  if (self.performance && typeof self.performance.now === "function") {
+    return self.performance.now();
+  }
+  return Date.now();
+}
+
 // Load manifest from backend (decouples SW from Go template)
 async function loadManifest() {
   if (wasmManifest) {
@@ -26,6 +33,7 @@ async function loadManifest() {
 
   wasmManifestPromise = (async () => {
     try {
+      const manifestStart = nowMs();
       debugLog("[SW] Fetching WASM manifest...");
       const response = await fetch("/frontend/manifest.json", { cache: "no-cache" });
 
@@ -41,8 +49,13 @@ async function loadManifest() {
         self.__BOOTSTRAP_SERVERS__ = manifest.bootstraps;
         debugLog("[SW] Bootstraps loaded from manifest:", manifest.bootstraps);
       }
+      if (typeof manifest.optimizations === "boolean") {
+        self.__PORTAL_OPTIMIZATIONS__ = manifest.optimizations;
+        debugLog("[SW] Optimizations flag loaded from manifest:", manifest.optimizations);
+      }
 
       debugLog("[SW] Manifest loaded successfully:", manifest);
+      debugLog(`[SW] Manifest fetch time: ${Math.round(nowMs() - manifestStart)}ms`);
       return manifest;
     } catch (error) {
       console.error("[SW] Failed to load WASM manifest:", error);
@@ -79,6 +92,7 @@ let loading = false;
 let initError = null;
 let _lastReload = Date.now();
 let initPromise = null; // Prevent concurrent initialization
+let wasmInitStartMs = null;
 
 // Service Worker version for debugging
 const SW_VERSION = "1.0.0";
@@ -98,8 +112,8 @@ let declaredStage = ReadinessStage.UNINITIALIZED; // What we think the stage is
 // Check handler availability
 function areHandlersAvailable() {
   return {
-    http: typeof __go_jshttp !== "undefined",
-    sdk: typeof __sdk_message_handler !== "undefined"
+    http: typeof self.__go_jshttp === "function",
+    sdk: typeof self.__sdk_message_handler === "function"
   };
 }
 
@@ -213,6 +227,15 @@ function syncStage() {
   if (declaredStage !== actualStage) {
     debugLog(`[SW] Stage sync: ${declaredStage} -> ${actualStage}`);
     declaredStage = actualStage;
+    const stageName = Object.keys(ReadinessStage).find(
+      key => ReadinessStage[key] === actualStage
+    );
+    void broadcastToClients({
+      type: "SW_STAGE",
+      stage: actualStage,
+      stageName,
+      initError: initError ? initError.message : null,
+    });
   }
   return actualStage;
 }
@@ -391,6 +414,10 @@ async function ensureHandlersRegistered() {
     const stage = syncStage();
     if (stage >= ReadinessStage.READY) {
       debugLog("[SW] Handlers registered successfully");
+      if (wasmInitStartMs !== null) {
+        debugLog(`[SW] Handlers ready after ${Math.round(nowMs() - wasmInitStartMs)}ms`);
+        wasmInitStartMs = null;
+      }
       return true;
     }
 
@@ -421,6 +448,8 @@ async function runWASM() {
   }
 
   try {
+    wasmInitStartMs = nowMs();
+
     // Ensure manifest is loaded
     const manifest = await loadManifest();
 
@@ -446,7 +475,9 @@ async function runWASM() {
     try {
       // Use compileStreaming if available (most efficient)
       if (WebAssembly.compileStreaming) {
+        const wasmFetchStart = nowMs();
         const response = await fetchWithRetry(wasm_URL, {}, isMobile ? 5 : 3);
+        debugLog(`[SW] WASM fetch time: ${Math.round(nowMs() - wasmFetchStart)}ms`);
 
         // Check Content-Type before streaming
         const contentType = response.headers.get('content-type') || '';
@@ -462,6 +493,7 @@ async function runWASM() {
         debugLog("[SW] WASM file fetched, size:", response.headers.get('content-length'), "bytes");
 
         // Use instantiateStreaming for optimal performance
+        const instantiateStart = nowMs();
         const instantiatePromise = WebAssembly.instantiateStreaming(
           Promise.resolve(response),
           go.importObject
@@ -473,12 +505,15 @@ async function runWASM() {
 
         instance = await Promise.race([instantiatePromise, timeoutPromise]);
         debugLog("[SW] WebAssembly instantiated successfully via streaming");
+        debugLog(`[SW] WASM instantiate time: ${Math.round(nowMs() - instantiateStart)}ms`);
       }
     } catch (streamError) {
       // Fallback to traditional instantiate
       console.warn("[SW] compileStreaming failed, falling back to traditional method:", streamError.message);
 
+      const wasmFetchStart = nowMs();
       const response = await fetchWithRetry(wasm_URL, {}, isMobile ? 5 : 3);
+      debugLog(`[SW] WASM fetch time: ${Math.round(nowMs() - wasmFetchStart)}ms`);
 
       // Check Content-Type to detect if we got HTML instead of WASM
       const contentType = response.headers.get('content-type') || '';
@@ -521,6 +556,7 @@ async function runWASM() {
       // Instantiate WebAssembly with timeout
       debugLog("[SW] Instantiating WebAssembly...");
 
+      const instantiateStart = nowMs();
       const instantiatePromise = WebAssembly.instantiate(wasm_file, go.importObject);
       const timeoutPromise = new Promise((_, reject) =>
         setTimeout(() => reject(new Error(`WebAssembly instantiation timeout after ${instantiateTimeout}ms`)), instantiateTimeout)
@@ -528,12 +564,13 @@ async function runWASM() {
 
       instance = await Promise.race([instantiatePromise, timeoutPromise]);
       debugLog("[SW] WebAssembly instantiated successfully");
+      debugLog(`[SW] WASM instantiate time: ${Math.round(nowMs() - instantiateStart)}ms`);
     }
 
     const onExit = () => {
       console.warn("[SW] Go Program Exited - handlers will be undefined");
-      __go_jshttp = undefined;
-      __sdk_message_handler = undefined;
+      self.__go_jshttp = undefined;
+      self.__sdk_message_handler = undefined;
       loading = false;
       initError = null;
       syncStage(); // Auto-sync to UNINITIALIZED
@@ -556,6 +593,7 @@ async function runWASM() {
       message: error.message,
       stack: error.stack
     });
+    wasmInitStartMs = null;
 
     // Check for specific error types
     let errorType = "unknown";
@@ -713,12 +751,13 @@ self.addEventListener("message", (event) => {
         await ensureReady(ReadinessStage.READY);
 
         // Handlers should now be available
-        if (typeof __sdk_message_handler === "undefined") {
+        const sdkHandler = self.__sdk_message_handler;
+        if (typeof sdkHandler !== "function") {
           throw new Error("SDK message handler still not available after centralized recovery");
         }
 
-        // Call WASM message handler
-        __sdk_message_handler(event.data.type, event.data);
+        // Call WASM message handler (signature: type, data)
+        sdkHandler(event.data.type, event.data);
       } catch (error) {
         console.error("[SW] SDK message handling failed:", error);
         // Send error back to client
@@ -745,8 +784,7 @@ self.addEventListener("fetch", (e) => {
 
   // Skip Service Worker infrastructure files (prevent infinite loop during initialization)
   if (url.pathname.startsWith("/frontend/") ||
-      url.pathname === "/service-worker.js" ||
-      url.pathname === "/portal.mp4") {
+      url.pathname === "/service-worker.js") {
     e.respondWith(fetch(e.request));
     return;
   }
@@ -759,7 +797,7 @@ self.addEventListener("fetch", (e) => {
           // Centralized recovery: Wait until handlers are ready
           await ensureReady(ReadinessStage.READY);
 
-          if (typeof __go_jshttp !== "undefined") {
+          if (typeof self.__go_jshttp === "function") {
             return new Response("ACK-e8c2c70c-ec4a-40b2-b8af-d5638264f831", {
               status: 200,
             });
@@ -784,12 +822,13 @@ self.addEventListener("fetch", (e) => {
         await ensureReady(ReadinessStage.READY);
 
         // Handler should now be available
-        if (typeof __go_jshttp === "undefined") {
+        const goHttpHandler = self.__go_jshttp;
+        if (typeof goHttpHandler !== "function") {
           throw new Error("__go_jshttp still not available after centralized recovery");
         }
 
         // Process request
-        const resp = await __go_jshttp(e.request);
+        const resp = await goHttpHandler(e.request);
         return resp;
       } catch (error) {
         console.error("[SW] Request handling failed:", error);

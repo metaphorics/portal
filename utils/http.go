@@ -67,7 +67,7 @@ func IsLocalhost(r *http.Request) bool {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		// Try resolving hostnames to IPs (best-effort).
-		if addrs, err := net.LookupIP(host); err == nil {
+		if addrs, err := lookupIP(host); err == nil {
 			for _, a := range addrs {
 				if a.IsLoopback() || a.IsPrivate() {
 					return true

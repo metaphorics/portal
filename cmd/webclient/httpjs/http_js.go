@@ -30,6 +30,41 @@ var (
 	_Error       = js.Global().Get("Error")
 )
 
+func readOptimizationsFlag() bool {
+	value := js.Global().Get("__PORTAL_OPTIMIZATIONS__")
+	if value.IsUndefined() || value.IsNull() {
+		return true
+	}
+	if value.Type() == js.TypeBoolean {
+		return value.Bool()
+	}
+	return true
+}
+
+var optimizationsEnabled = readOptimizationsFlag()
+
+var readAllBufPool = make(chan []byte, 4)
+
+func getReadAllBuffer() []byte {
+	select {
+	case buf := <-readAllBufPool:
+		return buf
+	default:
+		return make([]byte, 32*1024)
+	}
+}
+
+func putReadAllBuffer(buf []byte) {
+	if cap(buf) < 32*1024 {
+		return
+	}
+	buf = buf[:32*1024]
+	select {
+	case readAllBufPool <- buf:
+	default:
+	}
+}
+
 // Request represents an HTTP request that will be sent via fetch API
 type Request struct {
 	Method  string
@@ -256,7 +291,13 @@ func (resp *Response) ReadAll() ([]byte, error) {
 	}
 
 	var buf bytes.Buffer
-	buffer := make([]byte, 32*1024) // 32KB buffer to reduce Go-JS boundary crossings
+	var buffer []byte
+	if optimizationsEnabled {
+		buffer = getReadAllBuffer() // 32KB buffer to reduce Go-JS boundary crossings
+		defer putReadAllBuffer(buffer)
+	} else {
+		buffer = make([]byte, 32*1024)
+	}
 
 	for {
 		n, err := resp.bodyReader.Read(buffer)

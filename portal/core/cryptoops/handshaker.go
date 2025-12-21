@@ -14,12 +14,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/valyala/bytebufferpool"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
-	"google.golang.org/protobuf/proto"
-
-	"github.com/valyala/bytebufferpool"
 	"gosuda.org/portal/portal/core/proto/rdsec"
 	"gosuda.org/portal/portal/utils/randpool"
 )
@@ -315,8 +313,8 @@ func (h *Handshaker) ClientHandshake(conn io.ReadWriteCloser, alpn string) (*Sec
 		SessionPublicKey: ephemeralPub,
 	}
 
-	// Serialize and sign the payload
-	payloadBytes, err := proto.Marshal(clientInitPayload)
+	// Serialize and sign the payload (vtproto avoids reflection for TinyGo)
+	payloadBytes, err := clientInitPayload.MarshalVT()
 	if err != nil {
 		return nil, ErrHandshakeFailed
 	}
@@ -329,7 +327,7 @@ func (h *Handshaker) ClientHandshake(conn io.ReadWriteCloser, alpn string) (*Sec
 	}
 
 	// Send client init message
-	clientInitBytes, err := proto.Marshal(clientInit)
+	clientInitBytes, err := clientInit.MarshalVT()
 	if err != nil {
 		return nil, ErrHandshakeFailed
 	}
@@ -346,13 +344,13 @@ func (h *Handshaker) ClientHandshake(conn io.ReadWriteCloser, alpn string) (*Sec
 	}
 
 	serverInitSigned := &rdsec.SignedPayload{}
-	if err := proto.Unmarshal(serverInitBytes, serverInitSigned); err != nil {
+	if err := serverInitSigned.UnmarshalVT(serverInitBytes); err != nil {
 		return nil, ErrHandshakeFailed
 	}
 
 	// Unmarshal the server init payload
 	serverInitPayload := &rdsec.ServerInitPayload{}
-	if err := proto.Unmarshal(serverInitSigned.GetData(), serverInitPayload); err != nil {
+	if err := serverInitPayload.UnmarshalVT(serverInitSigned.GetData()); err != nil {
 		return nil, ErrHandshakeFailed
 	}
 
@@ -385,13 +383,13 @@ func (h *Handshaker) ServerHandshake(conn io.ReadWriteCloser, alpns []string) (*
 	}
 
 	clientInitSigned := &rdsec.SignedPayload{}
-	if err := proto.Unmarshal(clientInitBytes, clientInitSigned); err != nil {
+	if err := clientInitSigned.UnmarshalVT(clientInitBytes); err != nil {
 		return nil, ErrHandshakeFailed
 	}
 
 	// Unmarshal the client init payload
 	clientInitPayload := &rdsec.ClientInitPayload{}
-	if err := proto.Unmarshal(clientInitSigned.GetData(), clientInitPayload); err != nil {
+	if err := clientInitPayload.UnmarshalVT(clientInitSigned.GetData()); err != nil {
 		return nil, ErrHandshakeFailed
 	}
 
@@ -427,8 +425,8 @@ func (h *Handshaker) ServerHandshake(conn io.ReadWriteCloser, alpns []string) (*
 		SessionPublicKey: ephemeralPub,
 	}
 
-	// Serialize and sign the payload
-	payloadBytes, err := proto.Marshal(serverInitPayload)
+	// Serialize and sign the payload (vtproto avoids reflection for TinyGo)
+	payloadBytes, err := serverInitPayload.MarshalVT()
 	if err != nil {
 		return nil, ErrHandshakeFailed
 	}
@@ -452,7 +450,7 @@ func (h *Handshaker) ServerHandshake(conn io.ReadWriteCloser, alpns []string) (*
 	wipeMemory(ephemeralPriv)
 
 	// Send server init message
-	serverInitBytes, err := proto.Marshal(serverInit)
+	serverInitBytes, err := serverInit.MarshalVT()
 	if err != nil {
 		return nil, ErrHandshakeFailed
 	}

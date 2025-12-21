@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help run build build-wasm compress-wasm build-frontend build-tunnel build-server clean
+.PHONY: help run build build-wasm build-wasm-tinygo compress-wasm build-frontend build-tunnel build-server clean
 
 .DEFAULT_GOAL := help
 
@@ -8,7 +8,8 @@ help:
 	@echo "Available targets:"
 	@echo "  make build             - Build everything (protoc, wasm, frontend, server)"
 	@echo "  make build-protoc      - Generate Go code from protobuf definitions"
-	@echo "  make build-wasm        - Build and compress WASM client with optimization"
+	@echo "  make build-wasm        - Build and compress WASM client with TinyGo (default)"
+	@echo "  make build-wasm-tinygo - Build and compress WASM client with TinyGo (strict runtime pairing)"
 	@echo "  make build-frontend    - Build React frontend (Tailwind CSS 4)"
 	@echo "  make build-server      - Build Go relay server (includes frontend build)"
 	@echo "  make run               - Run relay server"
@@ -29,12 +30,22 @@ build-protoc:
 		portal/core/proto/rdsec/rdsec.proto \
 		portal/core/proto/rdverb/rdverb.proto
 
-# Build WASM artifacts with wasm-opt optimization and generate manifest
-build-wasm:
-	@echo "[wasm] building webclient WASM..."
+# Build WASM artifacts with TinyGo (default)
+build-wasm: build-wasm-tinygo
+
+# Build WASM artifacts with TinyGo (strict runtime pairing)
+build-wasm-tinygo:
+	@echo "[wasm] building webclient WASM with TinyGo..."
 	@mkdir -p cmd/relay-server/dist/wasm
-	GOOS=js GOARCH=wasm go build -trimpath -ldflags "-s -w" -o cmd/relay-server/dist/wasm/portal.wasm ./cmd/webclient
-	
+	@rm -f cmd/relay-server/dist/wasm/*.wasm*
+	@echo "[wasm] minifying JS assets..."
+	@npx -y esbuild cmd/webclient/polyfill.js --minify --outfile=cmd/webclient/polyfill.min.js
+	@TINYGO=$$(command -v tinygo 2>/dev/null); \
+	if [ -z "$$TINYGO" ]; then \
+		echo "[wasm] ERROR: tinygo not found; install TinyGo to use build-wasm-tinygo"; \
+		exit 1; \
+	fi
+	@tinygo build -target=wasm -opt=z -no-debug -o cmd/relay-server/dist/wasm/portal.wasm ./cmd/webclient
 	@echo "[wasm] optimizing with wasm-opt..."
 	@if command -v wasm-opt >/dev/null 2>&1; then \
 		wasm-opt -Oz --enable-bulk-memory cmd/relay-server/dist/wasm/portal.wasm -o cmd/relay-server/dist/wasm/portal.wasm.tmp && \
@@ -44,7 +55,6 @@ build-wasm:
 		echo "[wasm] WARNING: wasm-opt not found, skipping optimization"; \
 		echo "[wasm] Install binaryen for smaller WASM files: brew install binaryen (macOS) or apt-get install binaryen (Linux)"; \
 	fi
-	
 	@echo "[wasm] calculating SHA256 hash..."
 	@WASM_HASH=$$(shasum -a 256 cmd/relay-server/dist/wasm/portal.wasm | awk '{print $$1}'); \
 	echo "[wasm] SHA256: $$WASM_HASH"; \
@@ -53,18 +63,21 @@ build-wasm:
 	cp cmd/relay-server/dist/wasm/portal.wasm cmd/relay-server/dist/wasm/$$WASM_HASH.wasm; \
 	rm -f cmd/relay-server/dist/wasm/portal.wasm; \
 	echo "[wasm] content-addressed WASM: dist/wasm/$$WASM_HASH.wasm"
-	
 	@echo "[wasm] copying additional resources..."
-	@cp cmd/webclient/wasm_exec.js cmd/relay-server/dist/wasm/wasm_exec.js
+	@TINYGOROOT=$$(tinygo env TINYGOROOT 2>/dev/null || true); \
+	if [ -z "$$TINYGOROOT" ] || [ ! -f "$$TINYGOROOT/targets/wasm_exec.js" ]; then \
+		echo "[wasm] ERROR: TinyGo wasm_exec.js not found; expected $$TINYGOROOT/targets/wasm_exec.js"; \
+		exit 1; \
+	fi; \
+	echo "[wasm] using TinyGo wasm_exec.js: $$TINYGOROOT/targets/wasm_exec.js"; \
+	npx -y esbuild "$$TINYGOROOT/targets/wasm_exec.js" --minify --outfile=cmd/relay-server/dist/wasm/wasm_exec.js
 	@cp cmd/webclient/service-worker.js cmd/relay-server/dist/wasm/service-worker.js
 	@cp cmd/webclient/index.html cmd/relay-server/dist/wasm/portal.html
-	@cp cmd/webclient/portal.mp4 cmd/relay-server/dist/wasm/portal.mp4
 	@echo "[wasm] build complete"
-
 	@echo "[wasm] precompressing webclient WASM with brotli..."
 	@WASM_FILE=$$(ls cmd/relay-server/dist/wasm/[0-9a-f]*.wasm 2>/dev/null | head -n1); \
 	if [ -z "$$WASM_FILE" ]; then \
-		echo "[wasm] ERROR: no content-addressed WASM found in cmd/relay-server/dist/wasm; run build-wasm first"; \
+		echo "[wasm] ERROR: no content-addressed WASM found in cmd/relay-server/dist/wasm; run build-wasm-tinygo first"; \
 		exit 1; \
 	fi; \
 	WASM_HASH=$$(basename "$$WASM_FILE" .wasm); \
@@ -75,7 +88,6 @@ build-wasm:
 	brotli -f "$$WASM_FILE" -o "cmd/relay-server/dist/wasm/$$WASM_HASH.wasm.br"; \
 	rm -f "$$WASM_FILE"; \
 	echo "[wasm] brotli: cmd/relay-server/dist/wasm/$$WASM_HASH.wasm.br"
-
 
 # Build React frontend with Tailwind CSS 4
 build-frontend:

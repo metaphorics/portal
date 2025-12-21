@@ -14,13 +14,27 @@ var (
 	_Uint8Array     = js.Global().Get("Uint8Array")
 )
 
+func readOptimizationsFlag() bool {
+	value := js.Global().Get("__PORTAL_OPTIMIZATIONS__")
+	if value.IsUndefined() || value.IsNull() {
+		return true
+	}
+	if value.Type() == js.TypeBoolean {
+		return value.Bool()
+	}
+	return true
+}
+
+var optimizationsEnabled = readOptimizationsFlag()
+
 type ReadableStream struct {
 	js.Value
 	r         io.ReadCloser
 	closeOnce sync.Once
 
 	// 데이터를 읽기 위한 버퍼
-	buffer []byte
+	buffer  []byte
+	reading bool
 
 	funcsToBeReleased []js.Func
 }
@@ -45,6 +59,18 @@ func NewReadableStream(r io.ReadCloser) *ReadableStream {
 	// pull: JS 런타임이 데이터를 요청할 때 호출됨 (가장 중요)
 	onPull = js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 		controller := args[0]
+		optEnabled := optimizationsEnabled
+		if optEnabled {
+			desiredSize := controller.Get("desiredSize")
+			if desiredSize.Type() == js.TypeNumber && desiredSize.Int() <= 0 {
+				return _Promise.Call("resolve")
+			}
+
+			if rs.reading {
+				return _Promise.Call("resolve")
+			}
+			rs.reading = true
+		}
 
 		// 3. Promise를 생성하여 반환합니다. (비동기 작업)
 		//    JS 스레드를 차단하지 않기 위해 Go 루틴에서 실제 I/O를 수행합니다.
@@ -56,6 +82,11 @@ func NewReadableStream(r io.ReadCloser) *ReadableStream {
 			// 4. 고루틴에서 (잠재적으로 블로킹되는) Read 수행
 			go func() {
 				defer promiseFn.Release()
+				if optEnabled {
+					defer func() {
+						rs.reading = false
+					}()
+				}
 
 				n, err := rs.r.Read(rs.buffer)
 

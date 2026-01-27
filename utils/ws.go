@@ -22,17 +22,17 @@ func NewWebSocketDialer() func(context.Context, string) (io.ReadWriteCloser, err
 	}
 }
 
-// defaultWebSocketUpgrader provides a permissive upgrader used across cmd binaries
+// defaultWebSocketUpgrader provides a permissive upgrader used across cmd binaries.
 var defaultWebSocketUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// UpgradeWebSocket upgrades the request/response to a WebSocket connection using DefaultWebSocketUpgrader
+// UpgradeWebSocket upgrades the request/response to a WebSocket connection using DefaultWebSocketUpgrader.
 func UpgradeWebSocket(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (*websocket.Conn, error) {
 	return defaultWebSocketUpgrader.Upgrade(w, r, responseHeader)
 }
 
-// UpgradeToWSStream upgrades HTTP to WebSocket and wraps it as io.ReadWriteCloser
+// UpgradeToWSStream upgrades HTTP to WebSocket and wraps it as io.ReadWriteCloser.
 func UpgradeToWSStream(w http.ResponseWriter, r *http.Request, responseHeader http.Header) (io.ReadWriteCloser, *websocket.Conn, error) {
 	wsConn, err := UpgradeWebSocket(w, r, responseHeader)
 	if err != nil {

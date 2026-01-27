@@ -20,12 +20,13 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/valyala/bytebufferpool"
+
 	"gosuda.org/portal/portal/core/proto/rdsec"
 	"gosuda.org/portal/portal/utils/randpool"
 )
 
 var _lengthBufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return new([4]byte)
 	},
 }
@@ -82,24 +83,24 @@ const (
 	maxTimestampSkew = 30 * time.Second
 	maxRawPacketSize = 1 << 26 // 64MB - same as relay server
 
-	// HKDF info strings for key derivation
+	// HKDF info strings for key derivation.
 	clientKeyInfo = "RDSEC_KEY_CLIENT"
 	serverKeyInfo = "RDSEC_KEY_SERVER"
 )
 
-// Handshaker handles the X25519-ChaCha20Poly1305 based handshake protocol
+// Handshaker handles the X25519-ChaCha20Poly1305 based handshake protocol.
 type Handshaker struct {
 	credential *Credential
 }
 
-// NewHandshaker creates a new Handshaker with the given credential
+// NewHandshaker creates a new Handshaker with the given credential.
 func NewHandshaker(credential *Credential) *Handshaker {
 	return &Handshaker{
 		credential: credential,
 	}
 }
 
-// SecureConnection represents a secured connection with encryption capabilities
+// SecureConnection represents a secured connection with encryption capabilities.
 type SecureConnection struct {
 	conn io.ReadWriteCloser
 
@@ -147,7 +148,7 @@ func (sc *SecureConnection) RemoteID() string {
 	return sc.remoteID
 }
 
-// Write encrypts and writes data to the underlying connection
+// Write encrypts and writes data to the underlying connection.
 func (sc *SecureConnection) Write(p []byte) (int, error) {
 	sc.mu.RLock()
 	if sc.closed {
@@ -172,7 +173,7 @@ func (sc *SecureConnection) Write(p []byte) (int, error) {
 	return sc.writeFragmentation(p)
 }
 
-// writeFragmentation
+// writeFragmentation.
 func (sc *SecureConnection) writeFragmentation(p []byte) (int, error) {
 	cipherSize := sc.encryptor.NonceSize() + len(p) + sc.encryptor.Overhead()
 	bufferSize := 4 + cipherSize
@@ -199,7 +200,7 @@ func (sc *SecureConnection) writeFragmentation(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// Read reads and decrypts data from the underlying connection
+// Read reads and decrypts data from the underlying connection.
 func (sc *SecureConnection) Read(p []byte) (int, error) {
 	sc.mu.RLock()
 	if sc.closed {
@@ -273,7 +274,7 @@ func (sc *SecureConnection) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// Close closes the underlying connection and releases resources
+// Close closes the underlying connection and releases resources.
 func (sc *SecureConnection) Close() error {
 	sc.closeOnce.Do(func() {
 		sc.mu.Lock()
@@ -288,7 +289,7 @@ func (sc *SecureConnection) Close() error {
 	return sc.closeErr
 }
 
-// ClientHandshake performs the client-side of the handshake
+// ClientHandshake performs the client-side of the handshake.
 func (h *Handshaker) ClientHandshake(conn io.ReadWriteCloser, alpn string) (*SecureConnection, error) {
 	// Generate ephemeral key pair for this session
 	ephemeralPriv, ephemeralPub, err := generateX25519KeyPair()
@@ -376,7 +377,7 @@ func (h *Handshaker) ClientHandshake(conn io.ReadWriteCloser, alpn string) (*Sec
 	return h.createSecureConnection(conn, clientEncryptKey, clientDecryptKey, serverInitPayload.GetIdentity().GetId())
 }
 
-// ServerHandshake performs the server-side of the handshake
+// ServerHandshake performs the server-side of the handshake.
 func (h *Handshaker) ServerHandshake(conn io.ReadWriteCloser, alpns []string) (*SecureConnection, error) {
 	// Read client init message
 	clientInitBytes, err := readLengthPrefixed(conn)
@@ -466,7 +467,7 @@ func (h *Handshaker) ServerHandshake(conn io.ReadWriteCloser, alpns []string) (*
 	return h.createSecureConnection(conn, serverEncryptKey, serverDecryptKey, clientInitPayload.GetIdentity().GetId())
 }
 
-// validateClientInit validates the client init message
+// validateClientInit validates the client init message.
 func (h *Handshaker) validateClientInit(clientInitSigned *rdsec.SignedPayload, clientInitPayload *rdsec.ClientInitPayload, expectedAlpns []string) error {
 	if clientInitSigned == nil || clientInitPayload == nil {
 		return ErrInvalidProtocol
@@ -500,7 +501,7 @@ func (h *Handshaker) validateClientInit(clientInitSigned *rdsec.SignedPayload, c
 	return nil
 }
 
-// validateServerInit validates the server init message
+// validateServerInit validates the server init message.
 func (h *Handshaker) validateServerInit(serverInitSigned *rdsec.SignedPayload, serverInitPayload *rdsec.ServerInitPayload) error {
 	if serverInitSigned == nil || serverInitPayload == nil {
 		return ErrInvalidProtocol
@@ -529,7 +530,7 @@ func (h *Handshaker) validateServerInit(serverInitSigned *rdsec.SignedPayload, s
 	return nil
 }
 
-// deriveClientSessionKeys derives encryption and decryption keys for the client
+// deriveClientSessionKeys derives encryption and decryption keys for the client.
 func (h *Handshaker) deriveClientSessionKeys(clientPriv, serverPub, clientNonce, serverNonce []byte) ([]byte, []byte, error) {
 	// Compute shared secret
 	sharedSecret, err := curve25519.X25519(clientPriv, serverPub)
@@ -549,7 +550,7 @@ func (h *Handshaker) deriveClientSessionKeys(clientPriv, serverPub, clientNonce,
 	return encryptKey, decryptKey, nil
 }
 
-// deriveServerSessionKeys derives encryption and decryption keys for the server
+// deriveServerSessionKeys derives encryption and decryption keys for the server.
 func (h *Handshaker) deriveServerSessionKeys(serverPriv, clientPub, clientNonce, serverNonce []byte) ([]byte, []byte, error) {
 	// Compute shared secret (should be same as client's)
 	sharedSecret, err := curve25519.X25519(serverPriv, clientPub)
@@ -569,7 +570,7 @@ func (h *Handshaker) deriveServerSessionKeys(serverPriv, clientPub, clientNonce,
 	return encryptKey, decryptKey, nil
 }
 
-// createSecureConnection creates a new SecureConnection with the given keys and nonces
+// createSecureConnection creates a new SecureConnection with the given keys and nonces.
 func (h *Handshaker) createSecureConnection(conn io.ReadWriteCloser, encryptKey, decryptKey []byte, remoteID string) (*SecureConnection, error) {
 	// Create AEAD instances
 	encryptor, err := chacha20poly1305.New(encryptKey)
@@ -599,7 +600,7 @@ func (h *Handshaker) createSecureConnection(conn io.ReadWriteCloser, encryptKey,
 
 // Helper functions
 
-// generateX25519KeyPair generates a new X25519 key pair
+// generateX25519KeyPair generates a new X25519 key pair.
 func generateX25519KeyPair() ([]byte, []byte, error) {
 	priv := make([]byte, curve25519.ScalarSize)
 	if _, err := rand.Read(priv); err != nil {
@@ -614,7 +615,7 @@ func generateX25519KeyPair() ([]byte, []byte, error) {
 	return priv, pub, nil
 }
 
-// deriveKey derives a key from the shared secret using HKDF-SHA256
+// deriveKey derives a key from the shared secret using HKDF-SHA256.
 func deriveKey(sharedSecret, salt, info []byte) []byte {
 	hkdf := hkdf.New(sha256.New, sharedSecret, salt, info)
 	key := make([]byte, sessionKeySize)
@@ -625,7 +626,7 @@ func deriveKey(sharedSecret, salt, info []byte) []byte {
 	return key
 }
 
-// validateTimestamp validates that the timestamp is within acceptable range
+// validateTimestamp validates that the timestamp is within acceptable range.
 func validateTimestamp(timestamp int64) error {
 	now := time.Now().Unix()
 	diff := now - timestamp
@@ -637,7 +638,7 @@ func validateTimestamp(timestamp int64) error {
 	return nil
 }
 
-// writeLengthPrefixed writes a length-prefixed message to the connection
+// writeLengthPrefixed writes a length-prefixed message to the connection.
 func writeLengthPrefixed(conn io.Writer, data []byte) error {
 	length := len(data)
 	lengthBytes := []byte{
@@ -655,7 +656,7 @@ func writeLengthPrefixed(conn io.Writer, data []byte) error {
 	return err
 }
 
-// readLengthPrefixed reads a length-prefixed message from the connection
+// readLengthPrefixed reads a length-prefixed message from the connection.
 func readLengthPrefixed(conn io.Reader) ([]byte, error) {
 	lengthBytes := make([]byte, 4)
 	if _, err := io.ReadFull(conn, lengthBytes); err != nil {

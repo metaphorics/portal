@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+
 	"gosuda.org/portal/cmd/relay-server/manager"
 	"gosuda.org/portal/portal"
 	"gosuda.org/portal/sdk"
@@ -181,7 +182,7 @@ func (f *Frontend) injectOGMetadata(htmlContent, title, description, imageURL st
 	return replacer.Replace(htmlContent)
 }
 
-// injectServerData injects server data into HTML for SSR
+// injectServerData injects server data into HTML for SSR.
 func (f *Frontend) injectServerData(htmlContent string, serv *portal.RelayServer) string {
 	// Get server data from lease manager
 	rows := []leaseRow{}
@@ -260,10 +261,7 @@ func convertLeaseEntriesToRows(serv *portal.RelayServer, admin *Admin) []leaseRo
 			}
 		}
 
-		since := now.Sub(leaseEntry.LastSeen)
-		if since < 0 {
-			since = 0
-		}
+		since := max(now.Sub(leaseEntry.LastSeen), 0)
 		lastSeenStr := func(d time.Duration) string {
 			if d >= time.Hour {
 				h := int(d / time.Hour)
@@ -346,8 +344,8 @@ func convertLeaseEntriesToRows(serv *portal.RelayServer, admin *Admin) []leaseRo
 // ServePortalStaticFile serves static files for portal frontend with caching.
 func (f *Frontend) ServePortalStaticFile(w http.ResponseWriter, r *http.Request, filePath string) {
 	// Check if this is a content-addressed WASM file
-	if strings.HasSuffix(filePath, ".wasm") {
-		hash := strings.TrimSuffix(filePath, ".wasm")
+	if before, ok := strings.CutSuffix(filePath, ".wasm"); ok {
+		hash := before
 		if utils.IsHexString(hash) {
 			f.serveCompressedWasm(w, r, filePath)
 			return
@@ -423,8 +421,8 @@ func (f *Frontend) InitWasmCache() error {
 
 		name := entry.Name()
 		// Look for content-addressed WASM files: <hex>.wasm.br
-		if strings.HasSuffix(name, ".wasm.br") {
-			hash := strings.TrimSuffix(name, ".wasm.br")
+		if before, ok := strings.CutSuffix(name, ".wasm.br"); ok {
+			hash := before
 			if utils.IsHexString(hash) {
 				fullPath := path.Join("dist", "wasm", name)
 				// Cache under the URL path (<hash>.wasm) while reading the
@@ -476,7 +474,7 @@ func (f *Frontend) cacheWasmFile(name, fullPath string) error {
 	return nil
 }
 
-// serveCompressedWasm serves pre-compressed WASM files from memory cache
+// serveCompressedWasm serves pre-compressed WASM files from memory cache.
 func (f *Frontend) serveCompressedWasm(w http.ResponseWriter, r *http.Request, filePath string) {
 	f.wasmCacheMu.RLock()
 	entry, ok := f.wasmCache[filePath]
@@ -615,7 +613,7 @@ func (f *Frontend) ServeStaticFile(w http.ResponseWriter, r *http.Request, fileP
 }
 
 // serveStaticFileWithFallback reads and serves a file from the static directory
-// If the file is not found, it falls back to portal.html for SPA routing
+// If the file is not found, it falls back to portal.html for SPA routing.
 func (f *Frontend) serveStaticFileWithFallback(w http.ResponseWriter, r *http.Request, filePath string, contentType string) {
 	utils.SetCORSHeaders(w)
 
@@ -649,7 +647,7 @@ func (f *Frontend) serveStaticFileWithFallback(w http.ResponseWriter, r *http.Re
 	w.Write(data)
 }
 
-// serveDynamicManifest generates and serves manifest.json dynamically
+// serveDynamicManifest generates and serves manifest.json dynamically.
 func (f *Frontend) ServeDynamicManifest(w http.ResponseWriter, _ *http.Request) {
 	utils.SetCORSHeaders(w)
 
@@ -674,8 +672,8 @@ func (f *Frontend) ServeDynamicManifest(w http.ResponseWriter, _ *http.Request) 
 				}
 				name := entry.Name()
 				// Look for content-addressed WASM files: <hex>.wasm.br
-				if strings.HasSuffix(name, ".wasm.br") {
-					hash := strings.TrimSuffix(name, ".wasm.br")
+				if before, ok := strings.CutSuffix(name, ".wasm.br"); ok {
+					hash := before
 					if utils.IsHexString(hash) {
 						wasmHash = hash
 						wasmFile = hash + ".wasm"

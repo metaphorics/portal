@@ -28,7 +28,7 @@ func init() {
 }
 
 // TestE2E_ClientToAppThroughRelay tests the full end-to-end flow:
-// SDK Client -> Relay Server -> Demo App
+// SDK Client -> Relay Server -> Demo App.
 func TestE2E_ClientToAppThroughRelay(t *testing.T) {
 	log.Info().Msg("=== Starting E2E Test ===")
 
@@ -157,7 +157,7 @@ func TestE2E_ClientToAppThroughRelay(t *testing.T) {
 	log.Info().Msg("[TEST] Step 11: Sending HTTP request through connection")
 
 	// Create HTTP request
-	req, err := http.NewRequest("GET", "http://test-app/", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://test-app/", http.NoBody)
 	require.NoError(t, err, "Failed to create HTTP request")
 
 	// Write HTTP request to connection
@@ -197,7 +197,7 @@ func TestE2E_ClientToAppThroughRelay(t *testing.T) {
 	log.Info().Msg("=== E2E Test Completed Successfully ===")
 }
 
-// TestE2E_MultipleConnections tests multiple concurrent connections
+// TestE2E_MultipleConnections tests multiple concurrent connections.
 func TestE2E_MultipleConnections(t *testing.T) {
 	log.Info().Msg("=== Starting Multiple Connections Test ===")
 
@@ -278,7 +278,6 @@ func TestE2E_MultipleConnections(t *testing.T) {
 	log.Info().Int("count", numConnections).Msg("[TEST] Testing multiple concurrent connections")
 
 	for i := range numConnections {
-
 		go func() {
 			log.Debug().Int("conn_num", i).Msg("[TEST] Starting connection")
 
@@ -315,7 +314,7 @@ func TestE2E_MultipleConnections(t *testing.T) {
 	log.Info().Msg("=== Multiple Connections Test Completed ===")
 }
 
-// TestE2E_ConnectionTimeout tests timeout scenarios
+// TestE2E_ConnectionTimeout tests timeout scenarios.
 func TestE2E_ConnectionTimeout(t *testing.T) {
 	log.Info().Msg("=== Starting Connection Timeout Test ===")
 

@@ -58,7 +58,7 @@ func (b *Bucket) Take(n int64) {
 	}
 }
 
-// internal buffer pool for Copy
+// internal buffer pool for Copy.
 var bufPool = sync.Pool{New: func() any { return make([]byte, 64*1024) }}
 
 // Copy copies from src to dst, enforcing the provided byte-rate bucket if not nil.

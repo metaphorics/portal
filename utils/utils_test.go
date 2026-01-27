@@ -227,7 +227,7 @@ func TestIsSubdomain(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := IsSubdomain(tc.pattern, tc.host)
-			assert.Equal(t, got, tc.want, tc.name)
+			assert.Equal(t, tc.want, got, tc.name)
 		})
 	}
 }

@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -369,7 +370,7 @@ func (g *Client) Close() error {
 
 	// Stop all relays
 	for _, relay := range relays {
-		if err := g.RemoveRelay(relay.addr); err != nil && err != ErrRelayNotFound {
+		if err := g.RemoveRelay(relay.addr); err != nil && !errors.Is(err, ErrRelayNotFound) {
 			log.Error().Err(err).Str("relay", relay.addr).Msg("[SDK] Error removing relay")
 			errs = append(errs, err)
 		}
@@ -386,7 +387,7 @@ func (g *Client) Close() error {
 	return nil
 }
 
-// healthCheckWorker periodically checks relay health and reconnects if needed
+// healthCheckWorker periodically checks relay health and reconnects if needed.
 func (g *Client) healthCheckWorker(relay *connRelay) {
 	defer g.waitGroup.Done()
 
@@ -438,7 +439,7 @@ func (g *Client) healthCheckWorker(relay *connRelay) {
 	}
 }
 
-// reconnectRelay attempts to reconnect to a relay server
+// reconnectRelay attempts to reconnect to a relay server.
 func (g *Client) reconnectRelay(relay *connRelay) {
 	addr := relay.addr
 	dialer := relay.dialer
@@ -446,15 +447,12 @@ func (g *Client) reconnectRelay(relay *connRelay) {
 	log.Debug().Str("relay", addr).Msg("[SDK] Starting reconnection process")
 
 	// Remove the failed relay
-	if err := g.RemoveRelay(addr); err != nil && err != ErrRelayNotFound {
+	if err := g.RemoveRelay(addr); err != nil && !errors.Is(err, ErrRelayNotFound) {
 		log.Error().Err(err).Str("relay", addr).Msg("[SDK] Error removing relay during reconnection")
 	}
 
 	// Start reconnection in a goroutine
-	g.waitGroup.Add(1)
-	go func() {
-		defer g.waitGroup.Done()
-
+	g.waitGroup.Go(func() {
 		retries := 0
 		maxRetries := g.config.ReconnectMaxRetries
 
@@ -474,7 +472,7 @@ func (g *Client) reconnectRelay(relay *connRelay) {
 				return
 			}
 
-			if err == ErrRelayExists {
+			if errors.Is(err, ErrRelayExists) {
 				log.Debug().Str("relay", addr).Msg("[SDK] Relay already exists, reconnection complete")
 				return
 			}
@@ -506,10 +504,10 @@ func (g *Client) reconnectRelay(relay *connRelay) {
 				// Continue to next retry
 			}
 		}
-	}()
+	})
 }
 
-// AddRelay adds a new relay server to the client
+// AddRelay adds a new relay server to the client.
 func (g *Client) AddRelay(addr string, dialer func(context.Context, string) (io.ReadWriteCloser, error)) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -575,7 +573,7 @@ func (g *Client) AddRelay(addr string, dialer func(context.Context, string) (io.
 	return nil
 }
 
-// RemoveRelay removes a relay server from the client
+// RemoveRelay removes a relay server from the client.
 func (g *Client) RemoveRelay(addr string) error {
 	g.mu.Lock()
 	relay, exists := g.relays[addr]
@@ -611,7 +609,7 @@ func (g *Client) RemoveRelay(addr string) error {
 	return nil
 }
 
-// GetRelays returns a list of all relay addresses
+// GetRelays returns a list of all relay addresses.
 func (g *Client) GetRelays() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -663,7 +661,7 @@ type listener struct {
 	closed bool
 }
 
-// Implement net.Listener interface for Listener
+// Implement net.Listener interface for Listener.
 func (l *listener) Accept() (net.Conn, error) {
 	conn, ok := <-l.connCh
 	if !ok {

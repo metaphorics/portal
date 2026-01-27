@@ -2,6 +2,7 @@ package manager
 
 import (
 	"io"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,7 +11,7 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// BPSManager manages per-lease bytes-per-second rate limiting
+// BPSManager manages per-lease bytes-per-second rate limiting.
 type BPSManager struct {
 	mu         sync.Mutex
 	bpsLimits  map[string]int64   // leaseID -> bytes-per-second (0 = unlimited)
@@ -18,7 +19,7 @@ type BPSManager struct {
 	defaultBPS int64              // default bytes-per-second for new leases
 }
 
-// NewBPSManager creates a new BPS manager
+// NewBPSManager creates a new BPS manager.
 func NewBPSManager() *BPSManager {
 	return &BPSManager{
 		bpsLimits:  make(map[string]int64),
@@ -27,7 +28,7 @@ func NewBPSManager() *BPSManager {
 	}
 }
 
-// SetBPSLimit sets the BPS limit for a lease
+// SetBPSLimit sets the BPS limit for a lease.
 func (m *BPSManager) SetBPSLimit(leaseID string, bps int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -41,7 +42,7 @@ func (m *BPSManager) SetBPSLimit(leaseID string, bps int64) {
 	delete(m.bpsBuckets, leaseID)
 }
 
-// GetBPSLimit returns the BPS limit for a lease (0 = unlimited)
+// GetBPSLimit returns the BPS limit for a lease (0 = unlimited).
 func (m *BPSManager) GetBPSLimit(leaseID string) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,18 +52,16 @@ func (m *BPSManager) GetBPSLimit(leaseID string) int64 {
 	return 0
 }
 
-// GetAllBPSLimits returns a copy of all BPS limits
+// GetAllBPSLimits returns a copy of all BPS limits.
 func (m *BPSManager) GetAllBPSLimits() map[string]int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make(map[string]int64, len(m.bpsLimits))
-	for k, v := range m.bpsLimits {
-		result[k] = v
-	}
+	maps.Copy(result, m.bpsLimits)
 	return result
 }
 
-// SetDefaultBPS sets the default BPS limit for new leases
+// SetDefaultBPS sets the default BPS limit for new leases.
 func (m *BPSManager) SetDefaultBPS(bps int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -72,14 +71,14 @@ func (m *BPSManager) SetDefaultBPS(bps int64) {
 	m.defaultBPS = bps
 }
 
-// GetDefaultBPS returns the default BPS limit
+// GetDefaultBPS returns the default BPS limit.
 func (m *BPSManager) GetDefaultBPS() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.defaultBPS
 }
 
-// GetBucket returns a rate limit bucket for a lease, creating one if needed
+// GetBucket returns a rate limit bucket for a lease, creating one if needed.
 func (m *BPSManager) GetBucket(leaseID string) *Bucket {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -103,7 +102,7 @@ func (m *BPSManager) GetBucket(leaseID string) *Bucket {
 	return bucket
 }
 
-// CleanupLease removes BPS data for a lease
+// CleanupLease removes BPS data for a lease.
 func (m *BPSManager) CleanupLease(leaseID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -111,7 +110,7 @@ func (m *BPSManager) CleanupLease(leaseID string) {
 	delete(m.bpsBuckets, leaseID)
 }
 
-// Copy copies data with rate limiting
+// Copy copies data with rate limiting.
 func (m *BPSManager) Copy(dst io.Writer, src io.Reader, leaseID string) (int64, error) {
 	bucket := m.GetBucket(leaseID)
 	return Copy(dst, src, bucket)
@@ -295,7 +294,7 @@ func (b *Bucket) TakeWithTimeout(n int64, maxWait time.Duration) bool {
 	}
 }
 
-// Available returns the current number of available tokens (bytes)
+// Available returns the current number of available tokens (bytes).
 func (b *Bucket) Available() float64 {
 	if b == nil {
 		return 0
@@ -315,7 +314,7 @@ func (b *Bucket) Available() float64 {
 	return b.tokens
 }
 
-// Rate returns the configured rate in bytes per second
+// Rate returns the configured rate in bytes per second.
 func (b *Bucket) Rate() int64 {
 	if b == nil {
 		return 0
@@ -323,14 +322,14 @@ func (b *Bucket) Rate() int64 {
 	return b.rateBps
 }
 
-// Stats returns current statistics
+// Stats returns current statistics.
 func (b *Bucket) Stats() (totalBytes, throttleHits int64, totalWaited time.Duration) {
 	return atomic.LoadInt64(&b.totalBytes),
 		atomic.LoadInt64(&b.throttleHits),
 		time.Duration(atomic.LoadInt64(&b.totalWaited))
 }
 
-// internal buffer pool for Copy - 64KB reduces Take() call frequency and lock contention
+// internal buffer pool for Copy - 64KB reduces Take() call frequency and lock contention.
 var bufPool = sync.Pool{New: func() any { return make([]byte, 64*1024) }}
 
 // Copy copies from src to dst, enforcing the provided byte-rate bucket if not nil.
@@ -377,7 +376,7 @@ func Copy(dst io.Writer, src io.Reader, b *Bucket) (int64, error) {
 	return total, nil
 }
 
-// logCopyStats logs summary statistics when copy completes
+// logCopyStats logs summary statistics when copy completes.
 func logCopyStats(b *Bucket, totalBytes int64, startTime time.Time) {
 	if b == nil || totalBytes == 0 {
 		return

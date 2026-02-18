@@ -11,6 +11,7 @@ import (
 
 	"gosuda.org/portal/portal"
 	"gosuda.org/portal/portal/core/cryptoops"
+	"gosuda.org/portal/portal/core/proto/rdverb"
 )
 
 func newUnitTestClient(t *testing.T) *Client {
@@ -138,4 +139,56 @@ func TestLookupNameReturnsErrNoAvailableRelayWhenNoRelays(t *testing.T) {
 	lease, err := client.LookupName("missing")
 	require.Nil(t, lease)
 	require.ErrorIs(t, err, ErrNoAvailableRelay)
+}
+
+func TestLookupName_Success(t *testing.T) {
+	// Set up a relay server with a pipe dialer.
+	relayCred, err := cryptoops.NewCredential()
+	require.NoError(t, err)
+
+	relayServer := portal.NewRelayServer(relayCred, []string{"pipe://relay"})
+	relayServer.Start()
+	t.Cleanup(relayServer.Stop)
+
+	dialer := func(_ context.Context, _ string) (portal.Session, error) { //nolint:unparam // error is always nil in tests
+		clientSess, serverSess := portal.NewPipeSessionPair()
+		go relayServer.HandleSession(serverSess)
+		return clientSess, nil
+	}
+
+	// Create a publisher client and register a lease.
+	pubClient, err := NewClient(func(c *ClientConfig) {
+		c.BootstrapServers = []string{"pipe://relay"}
+		c.Dialer = dialer
+		c.HealthCheckInterval = time.Hour
+		c.ReconnectInterval = time.Hour
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pubClient.Close() })
+
+	pubCred, err := cryptoops.NewCredential()
+	require.NoError(t, err)
+
+	listener, err := pubClient.Listen(pubCred, "lookup-test-svc", []string{"http/1.1"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	// Create a consumer client that uses the same relay.
+	consumerClient, err := NewClient(func(c *ClientConfig) {
+		c.BootstrapServers = []string{"pipe://relay"}
+		c.Dialer = dialer
+		c.HealthCheckInterval = time.Hour
+		c.ReconnectInterval = time.Hour
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = consumerClient.Close() })
+
+	// Poll until the lease propagates to the relay (avoids flaky wall-clock sleep).
+	var found *rdverb.Lease
+	require.Eventually(t, func() bool {
+		found, err = consumerClient.LookupName("lookup-test-svc")
+		return err == nil && found != nil
+	}, 5*time.Second, 50*time.Millisecond)
+	require.Equal(t, pubCred.ID(), found.Identity.Id)
+	require.Equal(t, "lookup-test-svc", found.Name)
 }

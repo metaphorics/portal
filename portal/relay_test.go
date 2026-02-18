@@ -236,3 +236,57 @@ func TestRelayServerStopWaitsForRelayedConnectionWorker(t *testing.T) {
 	waitForSignal(t, stopDone, "Stop completion with relayed worker")
 	waitForSignal(t, requestDone, "request completion after relayed worker release")
 }
+
+func TestRelayServer_GetLeaseManager(t *testing.T) {
+	t.Parallel()
+
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	defer server.Stop()
+
+	lm := server.GetLeaseManager()
+	if lm == nil {
+		t.Fatal("GetLeaseManager should return a non-nil LeaseManager")
+	}
+}
+
+func TestRelayServer_SetMaxRelayedPerLease(t *testing.T) {
+	t.Parallel()
+
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	defer server.Stop()
+
+	// Must not panic.
+	server.SetMaxRelayedPerLease(5)
+
+	server.limitsLock.Lock()
+	got := server.maxRelayedPerLease
+	server.limitsLock.Unlock()
+
+	if got != 5 {
+		t.Fatalf("expected maxRelayedPerLease to be 5, got %d", got)
+	}
+}
+
+func TestRelayServer_GetAllLeaseEntries_Empty(t *testing.T) {
+	t.Parallel()
+
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	defer server.Stop()
+
+	entries := server.GetAllLeaseEntries()
+	if len(entries) != 0 {
+		t.Fatalf("expected no lease entries on fresh server, got %d", len(entries))
+	}
+}
+
+func TestRelayServer_GetLeaseALPNs_Empty(t *testing.T) {
+	t.Parallel()
+
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	defer server.Stop()
+
+	alpns := server.GetLeaseALPNs("nonexistent-id")
+	if len(alpns) != 0 {
+		t.Fatalf("expected no ALPNs for nonexistent lease, got %v", alpns)
+	}
+}

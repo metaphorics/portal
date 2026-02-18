@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"gosuda.org/portal/portal/core/cryptoops"
+	"gosuda.org/portal/portal/core/proto/rdsec"
 	"gosuda.org/portal/portal/core/proto/rdverb"
 )
 
@@ -285,4 +286,130 @@ func TestIntegration_ParallelPeerRequestsEchoSucceed(t *testing.T) {
 	for err := range errs {
 		require.NoError(t, err)
 	}
+}
+
+func TestRelayServer_MaxRelayedPerLeaseEnforcement(t *testing.T) {
+	server := newIntegrationRelayServer(t)
+	server.SetMaxRelayedPerLease(2)
+
+	// Block relay callbacks so relayed connections stay counted.
+	// establishRelayedConnection increments the per-lease counter before
+	// calling the callback and decrements it on defer after return.
+	relayRelease := make(chan struct{})
+	relayEntered := make(chan struct{}, 3)
+	server.SetEstablishRelayCallback(func(clientStream, leaseStream Stream, _ string) {
+		relayEntered <- struct{}{}
+		<-relayRelease
+		closeWithLog(clientStream, "test: close client stream")
+		closeWithLog(leaseStream, "test: close lease stream")
+	})
+	defer close(relayRelease)
+
+	// Host: register a lease and accept incoming connections.
+	hostClient := newIntegrationRelayClient(t, server)
+	hostCred := generateTestCredential(t)
+	err := hostClient.RegisterLease(hostCred, &rdverb.Lease{
+		Name: "limit-test",
+		Alpn: []string{"test"},
+	})
+	require.NoError(t, err)
+
+	// Drain incoming connections on the host side so the server relay
+	// handshake completes and the relay callback is entered.
+	go func() {
+		for conn := range hostClient.IncomingConnection() {
+			go func(c *IncomingConn) {
+				<-relayRelease
+				c.Close()
+			}(conn)
+		}
+	}()
+
+	// Launch first two peers in goroutines. They will get ACCEPTED but
+	// will block in the Noise handshake because the relay callback holds
+	// streams open without relaying data. We don't wait for them to finish.
+	// Pre-create credentials outside goroutines (generateTestCredential uses t.Helper).
+	peerCreds := [2]*cryptoops.Credential{generateTestCredential(t), generateTestCredential(t)}
+
+	for i := range 2 {
+		go func(cred *cryptoops.Credential) {
+			peerClientSess, peerServerSess := NewPipeSessionPair()
+			server.HandleSession(peerServerSess)
+			peerClient := NewRelayClient(peerClientSess)
+			defer func() { _ = peerClient.Close() }()
+
+			// This will block on handshake; that's expected.
+			_, _, _ = peerClient.RequestConnection(hostCred.ID(), "test", cred)
+		}(peerCreds[i])
+	}
+
+	// Wait for both relay callbacks to be entered — confirms per-lease count is 2.
+	for range 2 {
+		select {
+		case <-relayEntered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for relay callbacks to be entered")
+		}
+	}
+
+	// Third peer — should be rejected because per-lease limit (2) is reached.
+	// Rejection happens before relay establishment, so RequestConnection returns
+	// immediately with ErrConnectionRejected.
+	peerClientSess, peerServerSess := NewPipeSessionPair()
+	server.HandleSession(peerServerSess)
+	peerClient := NewRelayClient(peerClientSess)
+	defer func() { _ = peerClient.Close() }()
+
+	peerCred := generateTestCredential(t)
+	code, conn, reqErr := peerClient.RequestConnection(hostCred.ID(), "test", peerCred)
+	require.ErrorIs(t, reqErr, ErrConnectionRejected,
+		"peer 2: expected ErrConnectionRejected when per-lease limit is reached")
+	assert.Nil(t, conn)
+	assert.Equal(t, rdverb.ResponseCode_RESPONSE_CODE_REJECTED, code,
+		"peer 2: expected REJECTED when per-lease limit is reached")
+}
+
+func TestRelayServer_LeaseOwnershipEnforcement(t *testing.T) {
+	server := newIntegrationRelayServer(t)
+
+	// Shared credential — both clients reference the same lease identity.
+	sharedCred := generateTestCredential(t)
+
+	// Client A registers a lease with the shared credential.
+	clientA := newIntegrationRelayClient(t, server)
+	err := clientA.RegisterLease(sharedCred, &rdverb.Lease{
+		Name: "ownership-test",
+		Alpn: []string{"test-proto"},
+	})
+	require.NoError(t, err)
+
+	// Client B connects on a separate session (different ConnectionID).
+	clientB := newIntegrationRelayClient(t, server)
+
+	// Attempt to delete Client A's lease from Client B's connection.
+	// deleteLease is package-private, so we can call it directly to inspect
+	// the server's response code. DeregisterLease swallows the code.
+	identity := &rdsec.Identity{
+		Id:        sharedCred.ID(),
+		PublicKey: sharedCred.PublicKey(),
+	}
+	code, err := clientB.deleteLease(identity)
+	require.NoError(t, err, "transport-level error should not occur")
+	assert.Equal(t, rdverb.ResponseCode_RESPONSE_CODE_INVALID_IDENTITY, code,
+		"server must reject lease deletion from a non-owner connection")
+
+	// Attempt to update Client A's lease from Client B's connection.
+	// Build an update request with the same identity.
+	updateCode, err := clientB.updateLease(&rdverb.Lease{
+		Identity: identity,
+		Name:     "hijacked-name",
+		Alpn:     []string{"test-proto"},
+	})
+	require.NoError(t, err, "transport-level error should not occur")
+	assert.Equal(t, rdverb.ResponseCode_RESPONSE_CODE_INVALID_IDENTITY, updateCode,
+		"server must reject lease update from a non-owner connection")
+
+	// Verify the lease is still intact — Client A can deregister it.
+	err = clientA.DeregisterLease(sharedCred)
+	require.NoError(t, err, "owner should still be able to deregister the lease")
 }

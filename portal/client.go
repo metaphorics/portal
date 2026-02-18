@@ -72,6 +72,11 @@ type RelayClient struct {
 	stopOnce     sync.Once // Ensure stopClientCh is closed only once
 	waitGroup    sync.WaitGroup
 
+	// handlerWg tracks in-flight handleConnectionRequestStream goroutines.
+	// leaseListenWorker waits for all handlers to finish before closing
+	// incomingConnCh to prevent send-on-closed-channel panics.
+	handlerWg sync.WaitGroup
+
 	// incomingConnCh delivers incoming connections to the application
 	incomingConnCh chan *IncomingConn
 }
@@ -206,7 +211,13 @@ func (g *RelayClient) leaseUpdateWorker() {
 // new goroutine to handle each connection request.
 func (g *RelayClient) leaseListenWorker() {
 	defer g.waitGroup.Done()
-	defer close(g.incomingConnCh)
+	defer func() {
+		// Wait for all in-flight connection handlers to finish before
+		// closing the channel. This prevents send-on-closed-channel panics
+		// when handlers complete after shutdown is signaled.
+		g.handlerWg.Wait()
+		close(g.incomingConnCh)
+	}()
 	log.Debug().Msg("[RelayClient] Lease listen worker started")
 
 	// Create a context that cancels when the client stops
@@ -241,6 +252,7 @@ func (g *RelayClient) leaseListenWorker() {
 			}
 		}
 		log.Debug().Msg("[RelayClient] Accepted incoming stream")
+		g.handlerWg.Add(1)
 		go g.handleConnectionRequestStream(stream)
 	}
 }
@@ -253,6 +265,7 @@ func (g *RelayClient) leaseListenWorker() {
 // 4. If accepted, performs server-side cryptographic handshake
 // 5. Sends the established secure connection to the incoming channel.
 func (g *RelayClient) handleConnectionRequestStream(stream Stream) {
+	defer g.handlerWg.Done()
 	log.Debug().Msg("[RelayClient] Handling connection request stream")
 
 	pkt, err := readPacket(stream)
@@ -351,9 +364,17 @@ func (g *RelayClient) handleConnectionRequestStream(stream Stream) {
 		Str("remote_id", secConn.RemoteID()).
 		Msg("[RelayClient] Secure connection established, sending to incoming channel")
 
-	g.incomingConnCh <- &IncomingConn{
+	select {
+	case g.incomingConnCh <- &IncomingConn{
 		SecureConnection: secConn,
 		leaseID:          req.LeaseId,
+	}:
+	case <-g.stopClientCh:
+		// Client is shutting down; discard the connection.
+		log.Debug().
+			Str("lease_id", req.LeaseId).
+			Msg("[RelayClient] Client shutting down, discarding incoming connection")
+		_ = secConn.Close()
 	}
 }
 

@@ -3,6 +3,7 @@ package cryptoops
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -897,4 +898,248 @@ func TestConcurrentReadClose(t *testing.T) {
 	}
 
 	serverSecure.Close()
+}
+
+// TestSecureConnection_WriteAfterClose tests that Write on a closed connection returns net.ErrClosed.
+func TestSecureConnection_WriteAfterClose(t *testing.T) {
+	clientCred, _ := NewCredential()
+	serverCred, _ := NewCredential()
+
+	clientConn, serverConn := pipeConn()
+
+	clientHandshaker := NewHandshaker(clientCred)
+	serverHandshaker := NewHandshaker(serverCred)
+
+	var clientSecure, serverSecure *SecureConnection
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		clientSecure, _ = clientHandshaker.ClientHandshake(context.Background(), clientConn, "test-alpn")
+	}()
+
+	go func() {
+		defer wg.Done()
+		serverSecure, _ = serverHandshaker.ServerHandshake(context.Background(), serverConn, []string{"test-alpn"})
+	}()
+
+	wg.Wait()
+
+	_ = clientSecure.Close()
+
+	_, err := clientSecure.Write([]byte("should fail"))
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("expected net.ErrClosed after Write on closed connection, got: %v", err)
+	}
+
+	_ = serverSecure.Close()
+}
+
+// TestSecureConnection_ReadAfterClose tests that Read on a closed connection returns net.ErrClosed.
+func TestSecureConnection_ReadAfterClose(t *testing.T) {
+	clientCred, _ := NewCredential()
+	serverCred, _ := NewCredential()
+
+	clientConn, serverConn := pipeConn()
+
+	clientHandshaker := NewHandshaker(clientCred)
+	serverHandshaker := NewHandshaker(serverCred)
+
+	var clientSecure, serverSecure *SecureConnection
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		clientSecure, _ = clientHandshaker.ClientHandshake(context.Background(), clientConn, "test-alpn")
+	}()
+
+	go func() {
+		defer wg.Done()
+		serverSecure, _ = serverHandshaker.ServerHandshake(context.Background(), serverConn, []string{"test-alpn"})
+	}()
+
+	wg.Wait()
+
+	_ = clientSecure.Close()
+
+	buf := make([]byte, 64)
+	_, err := clientSecure.Read(buf)
+	if !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("expected net.ErrClosed after Read on closed connection, got: %v", err)
+	}
+
+	_ = serverSecure.Close()
+}
+
+// TestSecureConnection_DoubleClose tests that calling Close twice does not panic.
+func TestSecureConnection_DoubleClose(t *testing.T) {
+	clientCred, _ := NewCredential()
+	serverCred, _ := NewCredential()
+
+	clientConn, serverConn := pipeConn()
+
+	clientHandshaker := NewHandshaker(clientCred)
+	serverHandshaker := NewHandshaker(serverCred)
+
+	var clientSecure, serverSecure *SecureConnection
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		clientSecure, _ = clientHandshaker.ClientHandshake(context.Background(), clientConn, "test-alpn")
+	}()
+
+	go func() {
+		defer wg.Done()
+		serverSecure, _ = serverHandshaker.ServerHandshake(context.Background(), serverConn, []string{"test-alpn"})
+	}()
+
+	wg.Wait()
+
+	// First close.
+	err1 := clientSecure.Close()
+	// Second close — must not panic, should return same error.
+	err2 := clientSecure.Close()
+
+	// Both calls should return nil (TCP conn closes cleanly).
+	if err1 != nil {
+		t.Fatalf("first close returned error: %v", err1)
+	}
+	if err2 != nil {
+		t.Fatalf("second close returned error: %v", err2)
+	}
+
+	_ = serverSecure.Close()
+}
+
+// TestSecureConnection_ZeroLengthWritePreservesState tests that writing zero bytes
+// does not corrupt the nonce/cipher state. After a zero-length write, subsequent
+// normal writes and reads should still work correctly.
+func TestSecureConnection_ZeroLengthWritePreservesState(t *testing.T) {
+	clientCred, _ := NewCredential()
+	serverCred, _ := NewCredential()
+
+	clientConn, serverConn := pipeConn()
+
+	clientHandshaker := NewHandshaker(clientCred)
+	serverHandshaker := NewHandshaker(serverCred)
+
+	var clientSecure, serverSecure *SecureConnection
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		clientSecure, _ = clientHandshaker.ClientHandshake(context.Background(), clientConn, "test-alpn")
+	}()
+
+	go func() {
+		defer wg.Done()
+		serverSecure, _ = serverHandshaker.ServerHandshake(context.Background(), serverConn, []string{"test-alpn"})
+	}()
+
+	wg.Wait()
+	defer clientSecure.Close()
+	defer serverSecure.Close()
+
+	// Write zero-length data.
+	n, err := clientSecure.Write([]byte{})
+	if err != nil {
+		t.Fatalf("zero-length write failed: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 bytes written, got %d", n)
+	}
+
+	// Write normal data after zero-length write -- nonce state should be fine.
+	payload := []byte("after-zero-write")
+	_, err = clientSecure.Write(payload)
+	if err != nil {
+		t.Fatalf("write after zero-length write failed: %v", err)
+	}
+
+	// Read on server side. The zero-length write produces no frame (Write returns
+	// immediately for len(p)==0 due to fragSize check), so the first Read gets
+	// the real payload directly.
+	buf := make([]byte, 256)
+	totalRead := 0
+	for totalRead < len(payload) {
+		nr, readErr := serverSecure.Read(buf[totalRead:])
+		if readErr != nil {
+			t.Fatalf("read after zero-length write failed: %v", readErr)
+		}
+		totalRead += nr
+	}
+	if !bytes.Equal(buf[:totalRead], payload) {
+		t.Fatalf("data mismatch: got %q, want %q", buf[:totalRead], payload)
+	}
+}
+
+// TestSecureConnection_CorruptedCiphertext tests that corrupted ciphertext
+// returns ErrDecryptionFailed. A fake frame with valid length but garbage
+// ciphertext is injected directly into the raw transport.
+func TestSecureConnection_CorruptedCiphertext(t *testing.T) {
+	clientCred, _ := NewCredential()
+	serverCred, _ := NewCredential()
+
+	clientConn, serverConn := pipeConn()
+
+	clientHandshaker := NewHandshaker(clientCred)
+	serverHandshaker := NewHandshaker(serverCred)
+
+	var clientSecure, serverSecure *SecureConnection
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		clientSecure, _ = clientHandshaker.ClientHandshake(context.Background(), clientConn, "test-alpn")
+	}()
+
+	go func() {
+		defer wg.Done()
+		serverSecure, _ = serverHandshaker.ServerHandshake(context.Background(), serverConn, []string{"test-alpn"})
+	}()
+
+	wg.Wait()
+	defer clientSecure.Close()
+	defer serverSecure.Close()
+
+	// First, verify normal write/read works.
+	payload := []byte("test-payload")
+	_, err := clientSecure.Write(payload)
+	if err != nil {
+		t.Fatalf("initial write failed: %v", err)
+	}
+	buf := make([]byte, len(payload))
+	_, err = io.ReadFull(serverSecure, buf)
+	if err != nil {
+		t.Fatalf("initial read failed: %v", err)
+	}
+
+	// Now craft a corrupted frame and write directly to the raw transport.
+	// Frame format: [4-byte big-endian length][ciphertext].
+	// Use a plausible size (32 bytes > noiseTagSize of 16) with garbage content.
+	fakeLength := uint32(32)
+	fakeFrame := make([]byte, 4+fakeLength)
+	binary.BigEndian.PutUint32(fakeFrame[:4], fakeLength)
+	// Fill with non-zero garbage (zeros might accidentally be valid).
+	for i := range fakeFrame[4:] {
+		fakeFrame[4+i] = byte(i + 1)
+	}
+
+	// Write corrupted frame to the raw clientConn (bypasses encryption).
+	// net.Pipe/TCP is synchronous, so we launch in a goroutine to avoid blocking.
+	go func() {
+		_, _ = clientConn.Write(fakeFrame)
+	}()
+
+	// serverSecure.Read should fail with ErrDecryptionFailed.
+	_, err = serverSecure.Read(make([]byte, 64))
+	if !errors.Is(err, ErrDecryptionFailed) {
+		t.Fatalf("expected ErrDecryptionFailed, got: %v", err)
+	}
 }

@@ -271,17 +271,19 @@ func (g *Client) Listen(cred *cryptoops.Credential, name string, alpns []string,
 		Int("relay_count", len(g.relays)).
 		Msg("[SDK] Registering lease with relays")
 
-	// Register lease with all available relays
+	// Register lease with all available relays.
+	// Snapshot the lease so goroutines don't race on listener.lease.
+	leaseSnapshot := lease.CloneVT()
 	for _, relay := range g.relays {
 		go func(r *connRelay) {
-			registerErr := r.client.RegisterLease(cred, listener.lease)
+			registerErr := r.client.RegisterLease(cred, leaseSnapshot)
 			if registerErr != nil {
 				log.Error().Err(registerErr).Str("relay", r.addr).Msg("[SDK] Failed to register lease")
 			} else {
 				log.Debug().Str("relay", r.addr).Msg("[SDK] Lease registered successfully")
 				// Store lease info in listener for future re-registration
 				listener.mu.Lock()
-				listener.lease = lease
+				listener.lease = leaseSnapshot
 				listener.mu.Unlock()
 			}
 		}(relay)
@@ -350,19 +352,19 @@ func (g *Client) listenerWorker(server *connRelay) {
 				continue
 			}
 			listener.conns[conn] = struct{}{}
-			listener.mu.Unlock()
 
-			// Send connection to listener (non-blocking)
+			// Send connection to listener (non-blocking).
+			// Hold listener.mu across the send to prevent Close() from closing connCh
+			// between the closed check above and the channel send.
 			select {
 			case listener.connCh <- conn:
+				listener.mu.Unlock()
 				log.Debug().Str("lease_id", lease).Msg("[SDK] Connection sent to listener channel")
-				// Connection sent successfully
 			default:
 				// Channel full, close connection
-				log.Warn().Str("lease_id", lease).Msg("[SDK] Listener channel full, closing connection")
-				listener.mu.Lock()
 				delete(listener.conns, conn)
 				listener.mu.Unlock()
+				log.Warn().Str("lease_id", lease).Msg("[SDK] Listener channel full, closing connection")
 				if closeErr := conn.Close(); closeErr != nil {
 					log.Error().Err(closeErr).Str("lease_id", lease).Msg("[SDK] Failed to close connection after channel overflow")
 				}
@@ -568,7 +570,9 @@ func (g *Client) AddRelay(addr string, dialer func(context.Context, string) (por
 	// Register all existing leases with the new relay
 	for _, listener := range g.listeners {
 		cred := listener.cred // immutable
+		listener.mu.Lock()
 		lease := listener.lease.CloneVT()
+		listener.mu.Unlock()
 		go func(cred *cryptoops.Credential, lease *rdverb.Lease) {
 			registerErr := relayClient.RegisterLease(cred, lease)
 			if registerErr != nil {

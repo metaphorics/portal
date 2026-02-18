@@ -290,3 +290,106 @@ func TestRelayServer_GetLeaseALPNs_Empty(t *testing.T) {
 		t.Fatalf("expected no ALPNs for nonexistent lease, got %v", alpns)
 	}
 }
+
+func TestRelayServer_IsConnectionActive(t *testing.T) {
+	t.Parallel()
+
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	defer server.Stop()
+
+	// No connections registered — should return false for any ID.
+	if server.IsConnectionActive(0) {
+		t.Fatal("expected IsConnectionActive(0) to be false on fresh server")
+	}
+	if server.IsConnectionActive(42) {
+		t.Fatal("expected IsConnectionActive(42) to be false on fresh server")
+	}
+
+	// White-box: inject a fake connection entry.
+	server.connectionsLock.Lock()
+	server.connections[7] = &Connection{}
+	server.connectionsLock.Unlock()
+
+	if !server.IsConnectionActive(7) {
+		t.Fatal("expected IsConnectionActive(7) to be true after insertion")
+	}
+	if server.IsConnectionActive(8) {
+		t.Fatal("expected IsConnectionActive(8) to be false for non-inserted ID")
+	}
+
+	// Clean up the injected entry.
+	server.connectionsLock.Lock()
+	delete(server.connections, 7)
+	server.connectionsLock.Unlock()
+
+	if server.IsConnectionActive(7) {
+		t.Fatal("expected IsConnectionActive(7) to be false after deletion")
+	}
+}
+
+func TestRelayClient_Ping_FallbackStream(t *testing.T) {
+	t.Parallel()
+
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	server.Start()
+	defer server.Stop()
+
+	clientSess, serverSess := NewPipeSessionPair()
+	server.HandleSession(serverSess)
+
+	client := NewRelayClient(clientSess)
+	defer client.Close()
+
+	// PipeSession does not implement the pinger interface,
+	// so Ping falls back to open-and-close a stream.
+	duration, err := client.Ping()
+	if err != nil {
+		t.Fatalf("Ping fallback: unexpected error: %v", err)
+	}
+	if duration <= 0 {
+		t.Fatalf("Ping fallback: expected positive duration, got %v", duration)
+	}
+}
+
+func TestRelayServer_ConcurrentHandleSessionAndStop(t *testing.T) {
+	server := NewRelayServer(newRelayTestCredential(t), []string{"localhost:8080"})
+	server.Start()
+
+	const numSessions = 10
+	var wg sync.WaitGroup
+
+	for range numSessions {
+		wg.Go(func() {
+			_, serverSess := NewPipeSessionPair()
+			server.HandleSession(serverSess)
+		})
+	}
+
+	// Wait for all HandleSession calls to complete (non-blocking registration).
+	wg.Wait()
+
+	// Stop the server — this waits for all handleConn goroutines to finish
+	// and clean up their connections.
+	stopDone := make(chan struct{})
+	go func() {
+		server.Stop()
+		close(stopDone)
+	}()
+
+	select {
+	case <-stopDone:
+		// No deadlock
+	case <-time.After(5 * time.Second):
+		t.Fatal("ConcurrentHandleSessionAndStop deadlocked")
+	}
+
+	// Server stopped — verify no connections remain.
+	// Stop() waits for all workers, so connections must be fully cleaned up.
+	server.connectionsLock.RLock()
+	connCount := len(server.connections)
+	server.connectionsLock.RUnlock()
+
+	if connCount != 0 {
+		t.Fatalf("expected 0 connections after concurrent stop, got %d", connCount)
+	}
+}

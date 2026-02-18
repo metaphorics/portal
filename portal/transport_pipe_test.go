@@ -8,6 +8,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestPipeSessionPair(t *testing.T) {
@@ -498,4 +501,39 @@ func TestPipeSessionCloseWithPendingStreams(t *testing.T) {
 	}
 
 	server.Close()
+}
+
+func TestPipeStream_ReadDrainsBufferedDataAfterPeerClose(t *testing.T) {
+	t.Parallel()
+
+	clientSess, serverSess := NewPipeSessionPair()
+	defer clientSess.Close()
+	defer serverSess.Close()
+
+	// Open a stream from client.
+	ctx := context.Background()
+	clientStream, err := clientSess.OpenStream(ctx)
+	require.NoError(t, err)
+
+	// Accept the stream on server side.
+	serverStream, err := serverSess.AcceptStream(ctx)
+	require.NoError(t, err)
+
+	// Write data from server side then close.
+	testData := []byte("hello-drain-test")
+	_, err = serverStream.Write(testData)
+	require.NoError(t, err)
+	require.NoError(t, serverStream.Close())
+
+	// Client should still be able to read the buffered data.
+	buf := make([]byte, len(testData))
+	_, err = io.ReadFull(clientStream, buf)
+	require.NoError(t, err)
+	assert.Equal(t, testData, buf)
+
+	// Next read should return EOF.
+	_, err = clientStream.Read(buf)
+	require.ErrorIs(t, err, io.EOF)
+
+	clientStream.Close()
 }

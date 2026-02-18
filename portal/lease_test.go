@@ -649,3 +649,88 @@ func TestLeaseManager_GetLeaseByName_ExactMatch(t *testing.T) {
 		t.Fatal("expected nonexistent name to not be found")
 	}
 }
+
+func TestLeaseManager_CleanupLeasesByConnectionID(t *testing.T) {
+	t.Parallel()
+
+	lm := NewLeaseManager(30 * time.Second)
+	defer lm.Stop()
+
+	// White-box: insert leases with specific ConnectionIDs.
+	lm.leasesLock.Lock()
+	lm.leases["lease-a"] = &LeaseEntry{
+		Lease:        &rdverb.Lease{Identity: &rdsec.Identity{Id: "lease-a"}, Name: "a"},
+		ConnectionID: 10,
+		Expires:      time.Now().Add(time.Hour),
+	}
+	lm.leases["lease-b"] = &LeaseEntry{
+		Lease:        &rdverb.Lease{Identity: &rdsec.Identity{Id: "lease-b"}, Name: "b"},
+		ConnectionID: 10,
+		Expires:      time.Now().Add(time.Hour),
+	}
+	lm.leases["lease-c"] = &LeaseEntry{
+		Lease:        &rdverb.Lease{Identity: &rdsec.Identity{Id: "lease-c"}, Name: "c"},
+		ConnectionID: 20,
+		Expires:      time.Now().Add(time.Hour),
+	}
+	lm.leasesLock.Unlock()
+
+	// Cleanup leases for ConnectionID 10.
+	cleaned := lm.CleanupLeasesByConnectionID(10)
+	if len(cleaned) != 2 {
+		t.Fatalf("expected 2 cleaned leases, got %d: %v", len(cleaned), cleaned)
+	}
+
+	// Verify the right leases were cleaned.
+	cleanedSet := make(map[string]bool)
+	for _, id := range cleaned {
+		cleanedSet[id] = true
+	}
+	if !cleanedSet["lease-a"] || !cleanedSet["lease-b"] {
+		t.Fatalf("expected lease-a and lease-b to be cleaned, got %v", cleaned)
+	}
+
+	// Verify lease-c still exists.
+	lm.leasesLock.RLock()
+	_, cExists := lm.leases["lease-c"]
+	_, aExists := lm.leases["lease-a"]
+	lm.leasesLock.RUnlock()
+
+	if !cExists {
+		t.Fatal("expected lease-c to still exist")
+	}
+	if aExists {
+		t.Fatal("expected lease-a to be deleted")
+	}
+}
+
+func TestLeaseManager_CleanupLeasesByConnectionID_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	lm := NewLeaseManager(30 * time.Second)
+	defer lm.Stop()
+
+	// White-box: insert a lease with a different ConnectionID.
+	lm.leasesLock.Lock()
+	lm.leases["lease-x"] = &LeaseEntry{
+		Lease:        &rdverb.Lease{Identity: &rdsec.Identity{Id: "lease-x"}, Name: "x"},
+		ConnectionID: 99,
+		Expires:      time.Now().Add(time.Hour),
+	}
+	lm.leasesLock.Unlock()
+
+	// Cleanup with a non-matching ConnectionID.
+	cleaned := lm.CleanupLeasesByConnectionID(1)
+	if len(cleaned) != 0 {
+		t.Fatalf("expected 0 cleaned leases for non-matching ID, got %d: %v", len(cleaned), cleaned)
+	}
+
+	// Verify original lease still exists.
+	lm.leasesLock.RLock()
+	_, exists := lm.leases["lease-x"]
+	lm.leasesLock.RUnlock()
+
+	if !exists {
+		t.Fatal("expected lease-x to still exist after no-match cleanup")
+	}
+}

@@ -379,6 +379,83 @@ func TestProxyConnectionDialFailure(t *testing.T) {
 	}
 }
 
+func TestFetchCertHash_HTTPFallbackOnTLSFailure(t *testing.T) {
+	t.Parallel()
+
+	// Start a plain HTTP server (no TLS) that serves /cert-hash.
+	expectedHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cert-hash" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"algorithm":"sha-256","hash":"%s"}`, expectedHash)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Use https:// scheme — HTTPS will fail (plain HTTP server), but HTTP fallback should succeed.
+	httpsURL := strings.Replace(srv.URL, "http://", "https://", 1) + "/relay"
+
+	hash, err := fetchCertHash(context.Background(), httpsURL)
+	if err != nil {
+		t.Fatalf("fetchCertHash() error = %v, expected HTTP fallback to succeed", err)
+	}
+
+	if got := hex.EncodeToString(hash); got != expectedHash {
+		t.Fatalf("fetchCertHash() hash = %s, want %s", got, expectedHash)
+	}
+}
+
+func TestFetchCertHash_NoFallbackOnHTTPScheme(t *testing.T) {
+	t.Parallel()
+
+	expectedHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cert-hash" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"algorithm":"sha-256","hash":"%s"}`, expectedHash)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Use http:// scheme — should succeed directly without fallback.
+	hash, err := fetchCertHash(context.Background(), srv.URL+"/relay")
+	if err != nil {
+		t.Fatalf("fetchCertHash() error = %v", err)
+	}
+
+	if got := hex.EncodeToString(hash); got != expectedHash {
+		t.Fatalf("fetchCertHash() hash = %s, want %s", got, expectedHash)
+	}
+}
+
+func TestFetchCertHash_NoFallbackOnResponseError(t *testing.T) {
+	t.Parallel()
+
+	// HTTPS server returns a bad algorithm — response-level error should NOT trigger fallback.
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/cert-hash" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"algorithm":"sha-1","hash":"deadbeef"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := fetchCertHash(context.Background(), srv.URL+"/relay")
+	if err == nil {
+		t.Fatal("fetchCertHash() expected error, got nil")
+	}
+	// Should be the original response-level error, not a connection error from HTTP fallback.
+	if !strings.Contains(err.Error(), "unexpected hash algorithm: sha-1") {
+		t.Fatalf("fetchCertHash() error = %q, want 'unexpected hash algorithm' (response-level error, not fallback)", err.Error())
+	}
+}
+
 func newCertHashTLSServer(t *testing.T) (srv *httptest.Server, hash string) {
 	t.Helper()
 

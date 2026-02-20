@@ -99,6 +99,66 @@ func TestServeTunnelScript(t *testing.T) {
 		}
 	})
 
+	t.Run("ShellScriptIncludesInsecureEnvSupport", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/tunnel", http.NoBody)
+
+		serveTunnelScript(rec, req, portalURL)
+
+		body := rec.Body.String()
+		if !strings.Contains(body, `INSECURE`) {
+			t.Fatal("shell script missing INSECURE env var support")
+		}
+		if !strings.Contains(body, `--insecure`) {
+			t.Fatal("shell script missing --insecure flag")
+		}
+	})
+
+	t.Run("ShellScriptIncludesCertHashEnvSupport", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/tunnel", http.NoBody)
+
+		serveTunnelScript(rec, req, portalURL)
+
+		body := rec.Body.String()
+		if !strings.Contains(body, `CERT_HASH`) {
+			t.Fatal("shell script missing CERT_HASH env var support")
+		}
+		if !strings.Contains(body, `--cert-hash`) {
+			t.Fatal("shell script missing --cert-hash flag")
+		}
+	})
+
+	t.Run("PowerShellScriptIncludesInsecureEnvSupport", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/tunnel?os=windows", http.NoBody)
+
+		serveTunnelScript(rec, req, portalURL)
+
+		body := rec.Body.String()
+		if !strings.Contains(body, `$env:INSECURE`) {
+			t.Fatal("PowerShell script missing INSECURE env var support")
+		}
+		if !strings.Contains(body, `"--insecure"`) {
+			t.Fatal("PowerShell script missing --insecure flag")
+		}
+	})
+
+	t.Run("PowerShellScriptIncludesCertHashEnvSupport", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/tunnel?os=windows", http.NoBody)
+
+		serveTunnelScript(rec, req, portalURL)
+
+		body := rec.Body.String()
+		if !strings.Contains(body, `$env:CERT_HASH`) {
+			t.Fatal("PowerShell script missing CERT_HASH env var support")
+		}
+		if !strings.Contains(body, `"--cert-hash"`) {
+			t.Fatal("PowerShell script missing --cert-hash flag")
+		}
+	})
+
 	t.Run("HeadReturnsHeadersAndNoBody", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodHead, "/tunnel", http.NoBody)

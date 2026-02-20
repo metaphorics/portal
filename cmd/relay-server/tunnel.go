@@ -56,6 +56,10 @@ set -- "$BIN_PATH" --relay "$RELAY_URL" --host "${HOST:-localhost:3000}"
 if [ "${HIDE:-}" = "1" ] || [ "${HIDE:-}" = "true" ]; then
   set -- "$@" --hide
 fi
+if [ "${INSECURE:-}" = "1" ] || [ "${INSECURE:-}" = "true" ]; then
+  set -- "$@" --insecure
+fi
+[ -n "${CERT_HASH:-}" ] && set -- "$@" --cert-hash "$CERT_HASH"
 
 echo "Starting portal-tunnel..." >&2
 exec "$@"
@@ -100,6 +104,8 @@ if ($env:TAGS) { $ArgsList += "--tags", $env:TAGS }
 if ($env:THUMBNAIL) { $ArgsList += "--thumbnail", $env:THUMBNAIL }
 if ($env:OWNER) { $ArgsList += "--owner", $env:OWNER }
 if ($env:HIDE -eq "1" -or $env:HIDE -eq "true") { $ArgsList += "--hide" }
+if ($env:INSECURE -eq "1" -or $env:INSECURE -eq "true") { $ArgsList += "--insecure" }
+if ($env:CERT_HASH) { $ArgsList += "--cert-hash", $env:CERT_HASH }
 
 Write-Host "Starting portal-tunnel..."
 try {

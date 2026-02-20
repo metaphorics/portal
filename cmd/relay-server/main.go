@@ -167,7 +167,7 @@ func runServer(cfg serverConfig) error {
 		return errors.New("both --tls-cert and --tls-key must be provided together")
 	}
 
-	httpSrv := serveHTTP(fmt.Sprintf(":%d", cfg.Port), serv, admin, frontend, cfg.NoIndex, certHash, cfg.PortalAppURL, cfg.PortalURL, stop)
+	httpSrv := serveHTTP(fmt.Sprintf(":%d", cfg.Port), serv, admin, frontend, cfg.NoIndex, certHash, cfg.PortalAppURL, cfg.PortalURL, tlsCert, stop)
 
 	var wtCleanup func()
 	if tlsCert != nil {

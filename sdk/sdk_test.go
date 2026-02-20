@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -677,6 +678,129 @@ func TestClient_ConcurrentDial(t *testing.T) {
 			t.Error(err)
 		}
 	}
+}
+
+func TestReconnectRelay_RespectsMaxRetries(t *testing.T) {
+	t.Parallel()
+
+	var dialAttempts atomic.Int32
+	failingDialer := func(_ context.Context, _ string) (portal.Session, error) {
+		dialAttempts.Add(1)
+		return nil, errors.New("simulated dial failure")
+	}
+
+	client, err := NewClient(
+		WithBootstrapServers(nil),
+		WithHealthCheckInterval(time.Hour),
+		WithReconnectMaxRetries(3),
+		WithReconnectInterval(1*time.Millisecond),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	// Create a fake relay entry to trigger reconnection.
+	relay := &connRelay{
+		addr:   "pipe://reconnect-max-retries",
+		dialer: failingDialer,
+		stop:   make(chan struct{}),
+	}
+
+	client.reconnectRelay(relay)
+
+	// Wait for reconnection attempts to complete.
+	require.Eventually(t, func() bool {
+		return dialAttempts.Load() >= 3
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// Should not exceed max retries.
+	time.Sleep(50 * time.Millisecond)
+	require.LessOrEqual(t, dialAttempts.Load(), int32(4), "should stop after max retries")
+	require.Empty(t, client.GetRelays(), "no relay should be added after failures")
+}
+
+func TestReconnectRelay_StopsOnClientClose(t *testing.T) {
+	t.Parallel()
+
+	var dialAttempts atomic.Int32
+	failingDialer := func(_ context.Context, _ string) (portal.Session, error) {
+		dialAttempts.Add(1)
+		return nil, errors.New("simulated dial failure")
+	}
+
+	client, err := NewClient(
+		WithBootstrapServers(nil),
+		WithHealthCheckInterval(time.Hour),
+		WithReconnectMaxRetries(0), // infinite retries
+		WithReconnectInterval(10*time.Millisecond),
+	)
+	require.NoError(t, err)
+
+	relay := &connRelay{
+		addr:   "pipe://reconnect-cancel",
+		dialer: failingDialer,
+		stop:   make(chan struct{}),
+	}
+
+	client.reconnectRelay(relay)
+
+	// Wait for at least one attempt.
+	require.Eventually(t, func() bool {
+		return dialAttempts.Load() >= 1
+	}, 2*time.Second, 5*time.Millisecond)
+
+	// Close client — should stop the reconnection goroutine.
+	require.NoError(t, client.Close())
+
+	afterClose := dialAttempts.Load()
+	time.Sleep(100 * time.Millisecond)
+	// Should not have many more attempts after close.
+	require.InDelta(t, float64(afterClose), float64(dialAttempts.Load()), 2, "reconnection should stop after client close")
+}
+
+func TestReconnectRelay_SuccessfulReconnection(t *testing.T) {
+	dialer := newPipeRelayDialer(t)
+
+	client, err := NewClient(
+		WithBootstrapServers(nil),
+		WithHealthCheckInterval(time.Hour),
+		WithReconnectMaxRetries(5),
+		WithReconnectInterval(1*time.Millisecond),
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	relay := &connRelay{
+		addr:   "pipe://reconnect-success",
+		dialer: dialer,
+		stop:   make(chan struct{}),
+	}
+
+	client.reconnectRelay(relay)
+
+	// Should eventually reconnect.
+	require.Eventually(t, func() bool {
+		return slices.Contains(client.GetRelays(), "pipe://reconnect-success")
+	}, 5*time.Second, 10*time.Millisecond)
+}
+
+func TestHealthCheckWorker_StopsOnClientClose(t *testing.T) {
+	t.Parallel()
+
+	dialer := newPipeRelayDialer(t)
+
+	client, err := NewClient(
+		WithBootstrapServers(nil),
+		WithHealthCheckInterval(5*time.Millisecond),
+		WithReconnectInterval(time.Hour),
+	)
+	require.NoError(t, err)
+
+	// Add relay (which starts health check worker).
+	require.NoError(t, client.AddRelay("pipe://hc-stop", dialer))
+	require.Len(t, client.GetRelays(), 1)
+
+	// Close client — health check worker should exit cleanly.
+	require.NoError(t, client.Close())
 }
 
 func TestListener_CloseClosesActiveConnections(t *testing.T) {

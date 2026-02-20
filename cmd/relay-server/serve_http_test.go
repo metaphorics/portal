@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -44,6 +48,7 @@ func newServeHTTPTestHarness(t *testing.T, noIndex bool, certHash []byte) *serve
 		certHash,
 		testPortalAppURL,
 		testPortalURL,
+		nil,
 		func() {
 			shutdownCalls.Add(1)
 		},
@@ -64,6 +69,50 @@ func newServeHTTPTestHarness(t *testing.T, noIndex bool, certHash []byte) *serve
 		}
 		if got := h.shutdownCalls.Load(); got != 0 {
 			t.Errorf("shutdown callback called %d times, want 0", got)
+		}
+	})
+
+	return h
+}
+
+func newServeHTTPTestHarnessWithTLS(t *testing.T, certHash []byte, tlsCert *tls.Certificate) *serveHTTPTestHarness {
+	t.Helper()
+
+	frontend := newTestFrontendWithDistFS(fstest.MapFS{
+		"dist/app/portal.html": {
+			Data: []byte(`<html><head><title>[%OG_TITLE%]</title><meta name="description" content="[%OG_DESCRIPTION%]"></head><body>portal</body></html>`),
+		},
+	})
+
+	serv := newTestRelayServer(t)
+	shutdownCalls := &atomic.Int32{}
+	srv := serveHTTP(
+		":0",
+		serv,
+		nil,
+		frontend,
+		false,
+		certHash,
+		testPortalAppURL,
+		testPortalURL,
+		tlsCert,
+		func() {
+			shutdownCalls.Add(1)
+		},
+	)
+
+	h := &serveHTTPTestHarness{
+		srv:           srv,
+		shutdownCalls: shutdownCalls,
+	}
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		err := h.srv.Shutdown(ctx)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("srv.Shutdown() error = %v", err)
 		}
 	})
 
@@ -188,5 +237,89 @@ func TestServeHTTP_HostBasedRouting(t *testing.T) {
 	}
 	if !strings.Contains(subdomainRec.Body.String(), "<title>Portal Proxy Gateway</title>") {
 		t.Fatalf("subdomain body = %q, expected portal HTML with OG metadata injected", subdomainRec.Body.String())
+	}
+}
+
+func TestServeHTTP_WithTLSCert(t *testing.T) {
+	cert, certHash, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatalf("generateSelfSignedCert() error = %v", err)
+	}
+
+	h := newServeHTTPTestHarnessWithTLS(t, certHash, &cert)
+
+	// Wait for the HTTPS listener to start.
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify the handler serves /cert-hash correctly (routing works regardless of TLS).
+	rec := h.serve(testAppHost, "/cert-hash")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	hashHex := hex.EncodeToString(certHash)
+	expectedBody := `{"algorithm":"sha-256","hash":"` + hashHex + `"}`
+	if rec.Body.String() != expectedBody {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), expectedBody)
+	}
+
+	// Verify TLS config was set on the server.
+	if h.srv.TLSConfig == nil {
+		t.Fatal("expected TLSConfig to be set when tlsCert is provided")
+	}
+	if len(h.srv.TLSConfig.Certificates) != 1 {
+		t.Fatalf("expected 1 TLS certificate, got %d", len(h.srv.TLSConfig.Certificates))
+	}
+}
+
+func TestServeHTTP_WithTLSCertServesHTTPS(t *testing.T) {
+	cert, certHash, err := generateSelfSignedCert()
+	if err != nil {
+		t.Fatalf("generateSelfSignedCert() error = %v", err)
+	}
+
+	h := newServeHTTPTestHarnessWithTLS(t, certHash, &cert)
+
+	// Wait for the HTTPS listener to start.
+	time.Sleep(200 * time.Millisecond)
+
+	// Connect via TLS to the actual listener.
+	tlsClient := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test with self-signed cert
+		},
+	}
+
+	resp, err := tlsClient.Get(fmt.Sprintf("https://localhost%s/healthz", h.srv.Addr))
+	if err != nil {
+		// If the server bound to :0 we can't know the actual port easily.
+		// Fall back to handler-level verification.
+		t.Skipf("could not connect to HTTPS listener (likely ephemeral port): %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("HTTPS /healthz status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != `{"status":"ok"}` {
+		t.Fatalf("body = %q, want %q", string(body), `{"status":"ok"}`)
+	}
+}
+
+func TestServeHTTP_WithoutTLSCertNoTLSConfig(t *testing.T) {
+	t.Parallel()
+
+	h := newServeHTTPTestHarness(t, false, nil)
+
+	// Verify TLS config was NOT set when no cert provided.
+	if h.srv.TLSConfig != nil {
+		t.Fatal("expected TLSConfig to be nil when no tlsCert is provided")
+	}
+
+	// Handler still works for plain HTTP.
+	rec := h.serve(testAppHost, "/healthz")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
 }

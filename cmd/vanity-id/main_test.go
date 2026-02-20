@@ -119,6 +119,107 @@ func TestWorkerBehavior(t *testing.T) {
 	}
 }
 
+func TestStatsReporterPrintsETAFormats(t *testing.T) {
+	origStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	os.Stdout = writePipe
+	t.Cleanup(func() {
+		os.Stdout = origStdout
+		_ = readPipe.Close()
+	})
+
+	done := make(chan bool)
+	var attempts uint64 = 500000
+	var found uint64
+
+	finished := make(chan struct{})
+	go func() {
+		// prefixLen=4 -> expectedAttemptsPerResult = 32^4/2 = 524288
+		// With 500k attempts and 0 found, ETA should be computed and printed.
+		statsReporter(&attempts, &found, time.Now().Add(-1*time.Second), done, 4, 1)
+		close(finished)
+	}()
+
+	// Let the ticker fire at least once (2s interval, but we wait a bit).
+	time.Sleep(2500 * time.Millisecond)
+	done <- true
+
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("statsReporter did not stop after done signal")
+	}
+
+	closeErr := writePipe.Close()
+	if closeErr != nil {
+		t.Fatalf("writePipe.Close() error = %v", closeErr)
+	}
+
+	output, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("io.ReadAll() error = %v", err)
+	}
+
+	out := string(output)
+	if !strings.Contains(out, "Attempts:") {
+		t.Fatalf("expected stats output with 'Attempts:', got: %q", out)
+	}
+	if !strings.Contains(out, "ETA:") {
+		t.Fatalf("expected stats output with 'ETA:', got: %q", out)
+	}
+}
+
+func TestStatsReporterUnlimitedMaxResults(t *testing.T) {
+	origStdout := os.Stdout
+	readPipe, writePipe, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() error = %v", err)
+	}
+	os.Stdout = writePipe
+	t.Cleanup(func() {
+		os.Stdout = origStdout
+		_ = readPipe.Close()
+	})
+
+	done := make(chan bool)
+	var attempts uint64 = 1000
+	var found uint64
+
+	finished := make(chan struct{})
+	go func() {
+		// maxResults=0 means unlimited — no ETA should be shown.
+		statsReporter(&attempts, &found, time.Now().Add(-1*time.Second), done, 2, 0)
+		close(finished)
+	}()
+
+	time.Sleep(2500 * time.Millisecond)
+	done <- true
+
+	select {
+	case <-finished:
+	case <-time.After(3 * time.Second):
+		t.Fatal("statsReporter did not stop after done signal")
+	}
+
+	closeErr := writePipe.Close()
+	if closeErr != nil {
+		t.Fatalf("writePipe.Close() error = %v", closeErr)
+	}
+
+	output, err := io.ReadAll(readPipe)
+	if err != nil {
+		t.Fatalf("io.ReadAll() error = %v", err)
+	}
+
+	out := string(output)
+	if strings.Contains(out, "ETA:") {
+		t.Fatalf("expected no ETA for unlimited maxResults, got: %q", out)
+	}
+}
+
 func TestStatsReporterStopsOnDoneSignal(t *testing.T) {
 	origStdout := os.Stdout
 	readPipe, writePipe, err := os.Pipe()

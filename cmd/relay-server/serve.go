@@ -23,7 +23,7 @@ import (
 var distFS embed.FS
 
 // serveHTTP builds the HTTP mux and returns the server.
-func serveHTTP(addr string, serv *portal.RelayServer, admin *Admin, frontend *Frontend, noIndex bool, certHash []byte, portalAppURL, portalURL string, shutdown context.CancelFunc) *http.Server {
+func serveHTTP(addr string, serv *portal.RelayServer, admin *Admin, frontend *Frontend, noIndex bool, certHash []byte, portalAppURL, portalURL string, tlsCert *tls.Certificate, shutdown context.CancelFunc) *http.Server {
 	if addr == "" {
 		addr = ":0"
 	}
@@ -137,11 +137,26 @@ func serveHTTP(addr string, serv *portal.RelayServer, admin *Admin, frontend *Fr
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	if tlsCert != nil {
+		srv.TLSConfig = &tls.Config{
+			Certificates: []tls.Certificate{*tlsCert},
+			MinVersion:   tls.VersionTLS12,
+		}
+	}
+
 	go func() {
-		log.Info().Msgf("[server] http: %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Error().Err(err).Msg("[server] http error")
-			shutdown()
+		if tlsCert != nil {
+			log.Info().Msgf("[server] https: %s", addr)
+			if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msg("[server] https error")
+				shutdown()
+			}
+		} else {
+			log.Info().Msgf("[server] http: %s", addr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Error().Err(err).Msg("[server] http error")
+				shutdown()
+			}
 		}
 	}()
 

@@ -110,6 +110,9 @@ func main() {
 }
 
 // fetchCertHash fetches the certificate hash from relay server's /cert-hash endpoint.
+// If the relay URL uses https:// and the request fails with a connection-level error
+// (e.g., TLS handshake failure), it retries over plain http:// as a fallback for
+// development servers where the TCP listener may not have TLS enabled.
 func fetchCertHash(ctx context.Context, relayURL string) ([]byte, error) {
 	// Parse the relay URL to get the base URL
 	u, err := url.Parse(relayURL)
@@ -127,18 +130,47 @@ func fetchCertHash(ctx context.Context, relayURL string) ([]byte, error) {
 		},
 	}
 
+	hash, connErr, parseErr := doFetchCertHash(ctx, client, certHashURL)
+	if parseErr != nil {
+		// Server responded but content was invalid — no point retrying over HTTP
+		return nil, parseErr
+	}
+	if connErr == nil {
+		return hash, nil
+	}
+
+	// Connection-level failure on https:// — try http:// fallback for dev servers
+	if u.Scheme == "https" {
+		log.Warn().Err(connErr).Msg("HTTPS cert-hash fetch failed, retrying over HTTP")
+		httpURL := fmt.Sprintf("http://%s/cert-hash", u.Host)
+		httpHash, httpConnErr, httpParseErr := doFetchCertHash(ctx, client, httpURL)
+		if httpParseErr != nil {
+			return nil, httpParseErr
+		}
+		if httpConnErr == nil {
+			return httpHash, nil
+		}
+	}
+
+	return nil, connErr
+}
+
+// doFetchCertHash performs the actual HTTP request to fetch the cert hash.
+// Returns (hash, nil, nil) on success, (nil, connErr, nil) on connection failure,
+// or (nil, nil, parseErr) on response-level failure.
+func doFetchCertHash(ctx context.Context, client *http.Client, certHashURL string) (hash []byte, connErr, parseErr error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, certHashURL, http.NoBody)
 	if err != nil {
-		return nil, fmt.Errorf("create cert hash request: %w", err)
+		return nil, fmt.Errorf("create cert hash request: %w", err), nil
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch cert hash from %s: %w", certHashURL, err)
+		return nil, fmt.Errorf("failed to fetch cert hash from %s: %w", certHashURL, err), nil
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cert-hash endpoint returned status %d", resp.StatusCode)
+		return nil, nil, fmt.Errorf("cert-hash endpoint returned status %d", resp.StatusCode)
 	}
 
 	var certHashResp struct {
@@ -147,19 +179,19 @@ func fetchCertHash(ctx context.Context, relayURL string) ([]byte, error) {
 	}
 
 	if err = json.NewDecoder(resp.Body).Decode(&certHashResp); err != nil {
-		return nil, fmt.Errorf("failed to decode cert hash response: %w", err)
+		return nil, nil, fmt.Errorf("failed to decode cert hash response: %w", err)
 	}
 
 	if certHashResp.Algorithm != "sha-256" {
-		return nil, fmt.Errorf("unexpected hash algorithm: %s (expected sha-256)", certHashResp.Algorithm)
+		return nil, nil, fmt.Errorf("unexpected hash algorithm: %s (expected sha-256)", certHashResp.Algorithm)
 	}
 
-	hash, err := hex.DecodeString(certHashResp.Hash)
+	h, err := hex.DecodeString(certHashResp.Hash)
 	if err != nil {
-		return nil, fmt.Errorf("invalid cert hash hex: %w", err)
+		return nil, nil, fmt.Errorf("invalid cert hash hex: %w", err)
 	}
 
-	return hash, nil
+	return h, nil, nil
 }
 
 func fetchConsistentCertHash(ctx context.Context, relayURLs []string) ([]byte, error) {
